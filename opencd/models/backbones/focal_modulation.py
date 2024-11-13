@@ -12,10 +12,7 @@ import torch.nn.functional as F
 import torch.utils.checkpoint as checkpoint
 import numpy as np
 from timm.models.layers import DropPath, to_2tuple, trunc_normal_
-
-from mmcv_custom import load_checkpoint
-from mmdet.utils import get_root_logger
-from ..builder import BACKBONES
+from opencd.registry import MODELS
 
 class Mlp(nn.Module):
     """ Multilayer perceptron."""
@@ -245,10 +242,8 @@ class BasicLayer(nn.Module):
 
         for blk in self.blocks:
             blk.H, blk.W = H, W
-            if self.use_checkpoint:
-                x = checkpoint.checkpoint(blk, x)
-            else:
-                x = blk(x)
+            x = blk(x)
+
         if self.downsample is not None:
             x_reshaped = x.transpose(1, 2).view(x.shape[0], x.shape[-1], H, W)
             x_down = self.downsample(x_reshaped)      
@@ -312,7 +307,8 @@ class PatchEmbed(nn.Module):
         return x
 
 
-@BACKBONES.register_module()
+
+@MODELS.register_module()
 class FocalNet(nn.Module):
     """ FocalNet backbone.
 
@@ -338,7 +334,7 @@ class FocalNet(nn.Module):
     """
 
     def __init__(self,
-                 pretrain_img_size=1600,
+                 pretrain_img_size=1024,
                  patch_size=4,
                  in_chans=3,
                  embed_dim=96,
@@ -378,6 +374,7 @@ class FocalNet(nn.Module):
 
         # build layers
         self.layers = nn.ModuleList()
+        self.fusion = nn.ModuleList()
         for i_layer in range(self.num_layers):
             layer = BasicLayer(
                 dim=int(embed_dim * 2 ** i_layer),
@@ -393,6 +390,7 @@ class FocalNet(nn.Module):
                 use_layerscale=use_layerscale, 
                 use_checkpoint=use_checkpoint)
             self.layers.append(layer)
+            # self.fusion.append(FocalFusion(int(embed_dim * 2 ** i_layer)))
 
         num_features = [int(embed_dim * 2 ** i) for i in range(self.num_layers)]
         self.num_features = num_features
@@ -436,22 +434,14 @@ class FocalNet(nn.Module):
                 nn.init.constant_(m.bias, 0)
                 nn.init.constant_(m.weight, 1.0)
 
-        if isinstance(pretrained, str):
-            self.apply(_init_weights)
-            logger = get_root_logger()
-            load_checkpoint(self, pretrained, strict=False, logger=logger)
-        elif pretrained is None:
-            self.apply(_init_weights)
-        else:
-            raise TypeError('pretrained must be a str or None')
+        self.apply(_init_weights)
 
     def forward(self, x):
         """Forward function."""
-        tic = time.time()
         x = self.patch_embed(x)
         Wh, Ww = x.size(2), x.size(3)
 
-        x = x.flatten(2).transpose(1, 2)
+        x = x.flatten(2).transpose(1, 2)  # [B, H*W, C]
         x = self.pos_drop(x)
 
         outs = []
@@ -464,8 +454,8 @@ class FocalNet(nn.Module):
 
                 out = x_out.view(-1, H, W, self.num_features[i]).permute(0, 3, 1, 2).contiguous()
                 outs.append(out)
-        toc = time.time()
-        return tuple(outs)
+                
+        return outs
 
     def train(self, mode=True):
         """Convert the model into training mode while keep layers freezed."""

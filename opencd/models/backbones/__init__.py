@@ -11,9 +11,10 @@ from .vit_tuner import VisionTransformerTurner
 from .vit_sam import ViTSAM_Custom
 from .lightcdnet import LightCDNet
 from .cgnet import CGNet
+from .focal_modulation import FocalNet
 
 __all__ = ['IA_ResNetV1c', 'IA_ResNeSt', 'FC_EF', 'FC_Siam_diff', 
            'FC_Siam_conc', 'SNUNet_ECAM', 'TinyCD', 'IFN',
            'TinyNet', 'IA_MixVisionTransformer', 'HAN',
            'VisionTransformerTurner', 'ViTSAM_Custom',
-           'LightCDNet', 'CGNet']
+           'LightCDNet', 'CGNet', 'FocalNet']
