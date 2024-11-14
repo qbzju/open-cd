@@ -29,7 +29,7 @@ model = dict(
         norm_cfg=norm_cfg,
         align_corners=False,
         loss_decode=dict(
-            type='mmseg.CrossEntropyLoss', use_sigmoid=False, loss_weight=1.0)),
+            type='BCLLossCustom', loss_weight=1.0)),
     neck=dict(type='FeatureFusionNeck', policy='concat'),
     auxiliary_head=dict(
         type='mmseg.FCNHead',
