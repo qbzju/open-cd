@@ -27,7 +27,7 @@ model = dict(
     ),
     decode_head=dict(
         type='mmseg.UPerHead',
-        in_channels=[v*2 for v in [embed_dim, embed_dim*2, embed_dim*4, embed_dim*8]],
+        in_channels=[v for v in [embed_dim, embed_dim*2, embed_dim*4, embed_dim*8]],
         in_index=[0, 1, 2, 3],
         pool_scales=(1, 2, 3, 6),
         channels=512,
