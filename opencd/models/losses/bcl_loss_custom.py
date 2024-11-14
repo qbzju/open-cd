@@ -4,27 +4,6 @@ import torch.nn as nn
 
 from opencd.registry import MODELS
 
-
-def bcl_loss(
-        pred, 
-        target, 
-        margin=2.0, 
-        eps=1e-4, 
-        ignore_index=255, 
-        **kwargs):
-    pred = pred.squeeze()
-    target = target.squeeze()
-    assert pred.shape == target.shape
-    mask = (target != ignore_index).float()
-    target = target * mask
-    utarget = 1 - target
-    n_u = utarget.sum() + eps
-    n_c = target.sum() + eps
-    loss = torch.sum(utarget * torch.pow(pred, 2) * mask) / n_u + \
-        torch.sum(target * torch.pow(torch.clamp(margin - pred, min=0.), 2)) / n_c
-    return loss
-
-
 @MODELS.register_module()
 class BCLLossCustom(nn.Module):
     """Batch-balanced Contrastive Loss"""
@@ -56,8 +35,11 @@ class BCLLossCustom(nn.Module):
         class_weights = torch.tensor([
             num_pos / (num_pos + num_neg),  
             num_neg / (num_pos + num_neg)
-        ], device=pred.device)
+        ], device=pred.device, dtype=torch.float32)
         
+        assert torch.abs(class_weights.sum() - 1.0) < 1e-6, \
+            f'class weights sum should be 1, got {class_weights.sum()}'
+
         criterion = nn.CrossEntropyLoss(
             weight=class_weights,
             ignore_index=self.ignore_index,

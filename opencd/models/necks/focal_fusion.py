@@ -13,12 +13,16 @@ class FocalFusion(nn.Module):
 
         self.gate = nn.Softmax(dim=1)
 
-    def forward(self, x):
+    def forward(self, xA, xB):
+        
+        assert len(xA) == len(xB), "The features xA and xB from the" \
+            "backbone should be of equal length"
 
         outs = []
-        for i in range(len(x)):
-            gate = self.gate(self.gap_sigmoid(x[i])) # [B, 2C, 1, 1]
-            x[i] = x[i] * gate # [B, 2C, H, W]
-            outs.append(x[i].sum(dim=1))
+        for i in range(len(xA)):
+            out = xA[i] + xB[i]
+            gate = self.gate(self.gap_sigmoid(out)) # [B, C, 1, 1]
+            out = out * gate # [B, C, H, W]
+            outs.append(out)
 
-        return (outs, )
+        return outs

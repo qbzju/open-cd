@@ -20,7 +20,7 @@ model = dict(
         embed_dim=embed_dim),
     decode_head=dict(
         type='mmseg.UPerHead',
-        in_channels=[v*2 for v in [96, 192, 384, 768]],
+        in_channels=[96, 192, 384, 768],
         in_index=[0, 1, 2, 3],
         pool_scales=(1, 2, 3, 6),
         channels=512,
@@ -29,11 +29,11 @@ model = dict(
         norm_cfg=norm_cfg,
         align_corners=False,
         loss_decode=dict(
-            type='BCLLossCustom', loss_weight=1.0)),
-    neck=dict(type='FeatureFusionNeck', policy='concat'),
+            type='mmseg.CrossEntropyLoss', use_sigmoid=False, loss_weight=1.0)),
+    neck=dict(type='FocalFusion'),
     auxiliary_head=dict(
         type='mmseg.FCNHead',
-        in_channels=384 * 2,
+        in_channels=384,
         in_index=2,
         channels=256,
         num_convs=1,
