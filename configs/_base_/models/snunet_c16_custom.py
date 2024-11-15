@@ -27,9 +27,21 @@ model = dict(
         focal_windows=[9, 9, 9, 9],
         focal_levels=[3, 3, 3, 3],
         out_indices=(0, 1, 2, 3),
+        patch_size=4,
     ),
+    # decode_head=dict(
+    #     type='mmseg.FCNHead',
+    #     in_channels=embed_dim * 4,
+    #     channels=embed_dim * 4,
+    #     in_index=-1,
+    #     num_convs=0,
+    #     concat_input=False,
+    #     num_classes=2,
+    #     loss_decode=dict(
+    #         type='mmseg.CrossEntropyLoss', use_sigmoid=False, loss_weight=1.0)),
     decode_head=dict(
         type='mmseg.UPerHead',
+        # in_channels=[embed_dim * 4] * 4,
         in_channels=[v for v in [embed_dim, embed_dim*2, embed_dim*4, embed_dim*8]],
         in_index=[0, 1, 2, 3],
         pool_scales=(1, 2, 3, 6),
@@ -40,20 +52,21 @@ model = dict(
         align_corners=False,
         loss_decode=dict(
             type='mmseg.CrossEntropyLoss', use_sigmoid=False, loss_weight=1.0)),
-    neck=dict(type='FeatureFusionNeck', policy='diff'),
-    auxiliary_head=dict(
-        type='mmseg.FCNHead',
-        in_channels=embed_dim * 4,
-        in_index=2,
-        channels=256,
-        num_convs=1,
-        concat_input=False,
-        dropout_ratio=0.1,
-        num_classes=2,
-        norm_cfg=norm_cfg,
-        align_corners=False,
-        loss_decode=dict(
-            type='mmseg.CrossEntropyLoss', use_sigmoid=False, loss_weight=0.4)),
+    # neck=dict(type='FeatureFusionNeck', policy='diff'),
+    neck=dict(type='FocalFusion', in_channels=[embed_dim, embed_dim*2, embed_dim*4, embed_dim*8]),
+    # auxiliary_head=dict(
+    #     type='mmseg.FCNHead',
+    #     in_channels=embed_dim * 4,
+    #     in_index=2,
+    #     channels=256,
+    #     num_convs=1,
+    #     concat_input=False,
+    #     dropout_ratio=0.1,
+    #     num_classes=2,
+    #     norm_cfg=norm_cfg,
+    #     align_corners=False,
+    #     loss_decode=dict(
+    #         type='mmseg.CrossEntropyLoss', use_sigmoid=False, loss_weight=0.4)),
     # model training and testing settings
     train_cfg=dict(),
     test_cfg=dict(mode='whole'))
