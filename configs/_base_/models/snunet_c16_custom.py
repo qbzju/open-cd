@@ -9,7 +9,7 @@ data_preprocessor = dict(
     pad_val=0,
     seg_pad_val=255,
     test_cfg=dict(size_divisor=32))
-embed_dim = 128
+embed_dim = 96
 model = dict(
     type='SiamEncoderDecoder',
     data_preprocessor=data_preprocessor,
@@ -18,12 +18,15 @@ model = dict(
         type='FocalNet',
         in_chans=3,
         embed_dim=embed_dim,
-        depths=[8, 8, 8, 8],
+        depths=[2, 2, 6, 2],
+        mlp_ratio=4.,
+        drop_rate=0.,
         drop_path_rate=0.3,
         patch_norm=True,
         use_checkpoint=False,    
         focal_windows=[9, 9, 9, 9],
         focal_levels=[3, 3, 3, 3],
+        out_indices=(0, 1, 2, 3),
     ),
     decode_head=dict(
         type='mmseg.UPerHead',
@@ -37,10 +40,10 @@ model = dict(
         align_corners=False,
         loss_decode=dict(
             type='mmseg.CrossEntropyLoss', use_sigmoid=False, loss_weight=1.0)),
-    neck=dict(type='FocalFusion'),
+    neck=dict(type='FeatureFusionNeck', policy='diff'),
     auxiliary_head=dict(
         type='mmseg.FCNHead',
-        in_channels=embed_dim*4,
+        in_channels=embed_dim * 4,
         in_index=2,
         channels=256,
         num_convs=1,
@@ -54,3 +57,9 @@ model = dict(
     # model training and testing settings
     train_cfg=dict(),
     test_cfg=dict(mode='whole'))
+
+# AdamW optimizer, no weight decay for position embedding & layer norm in backbone
+optimizer = dict(_delete_=True, type='AdamW', lr=0.00006, betas=(0.9, 0.999), weight_decay=0.01,
+                 paramwise_cfg=dict(custom_keys={'absolute_pos_embed': dict(decay_mult=0.),
+                                                 'relative_position_bias_table': dict(decay_mult=0.),
+                                                 'norm': dict(decay_mult=0.)}))
