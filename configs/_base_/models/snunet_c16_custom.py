@@ -46,19 +46,19 @@ model = dict(
     neck=dict(type='FocalFusion', 
               in_channels=[embed_dim, embed_dim*2, embed_dim*4, embed_dim*8], 
               patch_size=patch_size),
-    auxiliary_head=dict(
-        type='mmseg.FCNHead',
-        in_channels=embed_dim * 4,
-        in_index=2,
-        channels=256,
-        num_convs=1,
-        concat_input=False,
-        dropout_ratio=0.1,
-        num_classes=2,
-        norm_cfg=norm_cfg,
-        align_corners=False,
-        loss_decode=dict(
-            type='mmseg.CrossEntropyLoss', use_sigmoid=False, loss_weight=0.4)),
+    # auxiliary_head=dict(
+    #     type='mmseg.FCNHead',
+    #     in_channels=embed_dim * 4,
+    #     in_index=2,
+    #     channels=256,
+    #     num_convs=1,
+    #     concat_input=False,
+    #     dropout_ratio=0.1,
+    #     num_classes=2,
+    #     norm_cfg=norm_cfg,
+    #     align_corners=False,
+    #     loss_decode=dict(
+    #         type='mmseg.CrossEntropyLoss', use_sigmoid=False, loss_weight=0.4)),
     # model training and testing settings
     train_cfg=dict(),
     test_cfg=dict(mode='whole'))
