@@ -18,10 +18,19 @@ class ChannelAttention(nn.Module):
         out = avg_out + max_out
         return self.sigmod(out)
     
+class PatchExpand(nn.Module):
+    def __init__(self, patch_size=4, embed_dim=96):
+        super().__init__()
+        self.expand = nn.ConvTranspose2d(embed_dim, embed_dim//4,
+                                       kernel_size=patch_size, stride=patch_size)
+    def forward(self, x):
+        x = self.expand(x)
+        return x
+    
 
 @MODELS.register_module()
 class FocalFusion(nn.Module):
-    def __init__(self, in_channels):
+    def __init__(self, in_channels, patch_size=4):
         super().__init__()
         self.gap_sigmoid = nn.Sequential(
             nn.AdaptiveAvgPool2d(1),
@@ -36,6 +45,11 @@ class FocalFusion(nn.Module):
         
         self.channel_attentions = nn.ModuleList([
             ChannelAttention(c) for c in in_channels
+        ])
+
+        self.expanders = nn.ModuleList([
+            PatchExpand(patch_size=patch_size, embed_dim=c)  
+            for c in in_channels
         ])
 
     def forward(self, xA, xB):
@@ -56,6 +70,7 @@ class FocalFusion(nn.Module):
             
             gate = self.gate(self.gap_sigmoid(out)) # [B, C, 1, 1]
             out = out * gate # [B, C, H, W]
+            out = self.expanders[i](out)
             outs.append(out)
 
         return outs

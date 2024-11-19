@@ -10,6 +10,7 @@ data_preprocessor = dict(
     seg_pad_val=255,
     test_cfg=dict(size_divisor=32))
 embed_dim = 96
+patch_size = 4
 model = dict(
     type='SiamEncoderDecoder',
     data_preprocessor=data_preprocessor,
@@ -18,6 +19,7 @@ model = dict(
         type='FocalNet',
         in_chans=3,
         embed_dim=embed_dim,
+        patch_size=patch_size,
         depths=[2, 2, 6, 2],
         mlp_ratio=4.,
         drop_rate=0.,
@@ -30,7 +32,7 @@ model = dict(
     ),
     decode_head=dict(
         type='mmseg.UPerHead',
-        in_channels=[v for v in [embed_dim, embed_dim*2, embed_dim*4, embed_dim*8]],
+        in_channels=[v // patch_size for v in [embed_dim, embed_dim*2, embed_dim*4, embed_dim*8]],
         in_index=[0, 1, 2, 3],
         pool_scales=(1, 2, 3, 6),
         channels=512,
@@ -40,7 +42,9 @@ model = dict(
         align_corners=False,
         loss_decode=dict(
             type='mmseg.CrossEntropyLoss', use_sigmoid=False, loss_weight=1.0)),
-    neck=dict(type='FocalFusion', in_channels=[embed_dim, embed_dim*2, embed_dim*4, embed_dim*8]),
+    neck=dict(type='FocalFusion', 
+              in_channels=[embed_dim, embed_dim*2, embed_dim*4, embed_dim*8], 
+              patch_size=patch_size),
     auxiliary_head=dict(
         type='mmseg.FCNHead',
         in_channels=embed_dim * 4,
