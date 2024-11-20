@@ -64,14 +64,12 @@ class FocalFusion(nn.Module):
         outs = []
         for i in range(len(xA)):
             diff = torch.abs(xA[i] - xB[i])
-            out = xA[i] + xB[i]
+            sum = xA[i] + xB[i]
+            out = self.channel_attentions[i](diff) * diff
+            gate = self.gate(self.gap_sigmoid(sum)) # [B, C, 1, 1]
+            out = out * gate # [B, C, H, W]
 
             out = self.norms[i](out)
-
-            out = self.channel_attentions[i](diff) * out
-            
-            gate = self.gate(self.gap_sigmoid(out)) # [B, C, 1, 1]
-            out = out * gate # [B, C, H, W]
             outs.append(out)
 
         return outs
