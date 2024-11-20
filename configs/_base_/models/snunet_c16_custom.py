@@ -43,6 +43,7 @@ model = dict(
         normalize_modulator=False,
         use_postln=False,
         use_postln_in_modulation=False,
+        use_layerscale=False,
         num_classes=2,
         loss_decode=dict(
             type='mmseg.CrossEntropyLoss', use_sigmoid=False, loss_weight=1.0),
