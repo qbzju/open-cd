@@ -29,10 +29,10 @@ model = dict(
         focal_windows=[3, 3, 3, 3],
         focal_levels=[2, 2, 2, 2],
         out_indices=(0, 1, 2, 3),
-        normalize_modulator=True,
-        use_postln=True,
-        use_postln_in_modulation=True,
-        use_layerscale=True
+        normalize_modulator=False,
+        use_postln=False,
+        use_postln_in_modulation=False,
+        use_layerscale=False
     ),
     decode_head=dict(
         type='FocalNetDecoder',
