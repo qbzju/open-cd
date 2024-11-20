@@ -54,7 +54,7 @@ class FocalFusion(nn.Module):
             # gate = self.gate(self.gap_sigmoid(diff)) # [B, C, 1, 1]
             # out = diff * gate # [B, C, H, W]
 
-            out = self.norms[i](out)
+            out = self.norms[i](diff)
             outs.append(out)
 
         return outs
