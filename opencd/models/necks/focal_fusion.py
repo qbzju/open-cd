@@ -18,19 +18,6 @@ class ChannelAttention(nn.Module):
         out = avg_out + max_out
         return self.sigmod(out)
     
-
-class LayerNorm2d(nn.Module):
-    def __init__(self, channels):
-        super().__init__()
-        self.norm = nn.LayerNorm(channels)
-        
-    def forward(self, x):
-        # x: [B,C,H,W]
-        x = x.permute(0, 2, 3, 1)  # [B,C,H,W] -> [B,H,W,C]
-        x = self.norm(x)
-        x = x.permute(0, 3, 1, 2)  # [B,H,W,C] -> [B,C,H,W]
-        return x
-
     
 
 @MODELS.register_module()
@@ -45,7 +32,7 @@ class FocalFusion(nn.Module):
         self.gate = nn.Softmax(dim=1)
 
         self.norms = nn.ModuleList([
-            LayerNorm2d(c) for c in in_channels
+            nn.BatchNorm2d(c) for c in in_channels
         ])
         
         self.channel_attentions = nn.ModuleList([
