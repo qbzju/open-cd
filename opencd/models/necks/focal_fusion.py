@@ -24,12 +24,12 @@ from opencd.registry import MODELS
 class FocalFusion(nn.Module):
     def __init__(self, in_channels, patch_size=4):
         super().__init__()
-        # self.gap_sigmoid = nn.Sequential(
-        #     nn.AdaptiveAvgPool2d(1),
-        #     nn.Sigmoid()
-        # )
+        self.gap_sigmoid = nn.Sequential(
+            nn.AdaptiveAvgPool2d(1),
+            nn.Sigmoid()
+        )
 
-        # self.gate = nn.Softmax(dim=1)
+        self.gate = nn.Softmax(dim=1)
 
         self.norms = nn.ModuleList([
             nn.BatchNorm2d(c) for c in in_channels
