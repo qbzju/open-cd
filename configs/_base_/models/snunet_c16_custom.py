@@ -42,7 +42,8 @@ model = dict(
         ),
     neck=dict(type='FocalFusion', 
               in_channels=[embed_dim, embed_dim*2, embed_dim*4, embed_dim*8], 
-              patch_size=patch_size),
+              patch_size=patch_size,
+              ),
     # auxiliary_head=dict(
     #     type='mmseg.FCNHead',
     #     in_channels=embed_dim * 4,

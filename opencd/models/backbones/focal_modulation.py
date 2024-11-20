@@ -43,10 +43,10 @@ class FocalModulation(nn.Module):
         focal_level (int): Number of focal levels
         focal_window (int): Focal window size at focal level 1
         focal_factor (int, default=2): Step to increase the focal window
-        use_postln (bool, default=False): Whether use post-modulation layernorm
+        use_postln (bool, default=True): Whether use post-modulation layernorm
     """
 
-    def __init__(self, dim, proj_drop=0., focal_level=2, focal_window=7, focal_factor=2, use_postln=False):
+    def __init__(self, dim, proj_drop=0., focal_level=2, focal_window=7, focal_factor=2, use_postln=True):
 
         super().__init__()
         self.dim = dim
@@ -120,7 +120,7 @@ class FocalModulationBlock(nn.Module):
 
     def __init__(self, dim, mlp_ratio=4., drop=0., drop_path=0., 
                  act_layer=nn.GELU, norm_layer=nn.LayerNorm,
-                 focal_level=2, focal_window=9, use_layerscale=False, layerscale_value=1e-4):
+                 focal_level=2, focal_window=9, use_layerscale=True, layerscale_value=1e-4):
         super().__init__()
         self.dim = dim
         self.mlp_ratio = mlp_ratio
@@ -388,7 +388,8 @@ class FocalNet(nn.Module):
                 focal_level=focal_levels[i_layer], 
                 use_conv_embed=use_conv_embed,
                 use_layerscale=use_layerscale, 
-                use_checkpoint=use_checkpoint)
+                use_checkpoint=use_checkpoint
+                )
             self.layers.append(layer)
             # self.fusion.append(FocalFusion(int(embed_dim * 2 ** i_layer)))
 

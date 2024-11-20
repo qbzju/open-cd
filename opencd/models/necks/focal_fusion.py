@@ -19,26 +19,38 @@ class ChannelAttention(nn.Module):
         return self.sigmod(out)
     
 
+class LayerNorm2d(nn.Module):
+    def __init__(self, channels):
+        super().__init__()
+        self.norm = nn.LayerNorm(channels)
+        
+    def forward(self, x):
+        # x: [B,C,H,W]
+        x = x.permute(0, 2, 3, 1)  # [B,C,H,W] -> [B,H,W,C]
+        x = self.norm(x)
+        x = x.permute(0, 3, 1, 2)  # [B,H,W,C] -> [B,C,H,W]
+        return x
+
     
 
 @MODELS.register_module()
 class FocalFusion(nn.Module):
     def __init__(self, in_channels, patch_size=4):
         super().__init__()
-        # self.gap_sigmoid = nn.Sequential(
-        #     nn.AdaptiveAvgPool2d(1),
-        #     nn.Sigmoid()
-        # )
+        self.gap_sigmoid = nn.Sequential(
+            nn.AdaptiveAvgPool2d(1),
+            nn.Sigmoid()
+        )
 
-        # self.gate = nn.Softmax(dim=1)
+        self.gate = nn.Softmax(dim=1)
 
-        # self.norms = nn.ModuleList([
-        #     nn.BatchNorm2d(c) for c in in_channels
-        # ])
+        self.norms = nn.ModuleList([
+            LayerNorm2d(c) for c in in_channels
+        ])
         
-        # self.channel_attentions = nn.ModuleList([
-        #     ChannelAttention(c) for c in in_channels
-        # ])
+        self.channel_attentions = nn.ModuleList([
+            ChannelAttention(c) for c in in_channels
+        ])
 
 
     def forward(self, xA, xB):
@@ -52,14 +64,15 @@ class FocalFusion(nn.Module):
         outs = []
         for i in range(len(xA)):
             diff = torch.abs(xA[i] - xB[i])
-            # out = xA[i] + xB[i]
-            # out = self.norms[i](out)
+            out = xA[i] + xB[i]
 
-            # out = self.channel_attentions[i](diff) * out
+            out = self.norms[i](out)
+
+            out = self.channel_attentions[i](diff) * out
             
-            # gate = self.gate(self.gap_sigmoid(out)) # [B, C, 1, 1]
-            # out = out * gate # [B, C, H, W]
-            outs.append(diff)
+            gate = self.gate(self.gap_sigmoid(out)) # [B, C, 1, 1]
+            out = out * gate # [B, C, H, W]
+            outs.append(out)
 
         return outs
 

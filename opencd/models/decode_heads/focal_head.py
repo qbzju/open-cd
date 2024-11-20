@@ -13,7 +13,7 @@ import torch.nn.functional as F
 from timm.models.layers import DropPath, trunc_normal_
 from opencd.registry import MODELS
 from mmseg.models.decode_heads.decode_head import BaseDecodeHead
-
+from mmcv.cnn import build_norm_layer
 
 # ------------------------------------------------------------------
 
@@ -26,37 +26,6 @@ import torch
 import torch.nn as nn
 
 # ------------------------------------------------------------
-
-class regression_head(nn.Module):
-    """ Regression Head """
-    def __init__(self, in_channels=288):
-        super(regression_head, self).__init__()
-
-        """
-        Parameters
-        ----------
-        in_channels : int (default 288)
-            number of input channels
-        """
-
-        self.in_channels = in_channels
-
-        self.conv1 = nn.Conv2d(self.in_channels, self.in_channels // 2, kernel_size=(3, 3),
-                               stride=(1, 1), padding=(1, 1), bias=True)
-        self.conv3 = nn.Conv2d(self.in_channels // 2, 1, kernel_size=(3, 3),
-                               stride=(1, 1), padding=(1, 1), bias=True)
-        self.act = nn.LeakyReLU(0.2, inplace=True)
-
-    def forward(self, x):
-        """
-        x : torch.tensor [N, C, H, W]
-        """
-        x = self.conv1(x)
-        x = self.act(x)
-        x = self.conv3(x)
-
-        return x
-
 
 
 class Mlp(nn.Module):
@@ -80,7 +49,7 @@ class Mlp(nn.Module):
 
 class FocalModulation(nn.Module):
     def __init__(self, dim, focal_window, focal_level, focal_factor=2, bias=True, proj_drop=0.,
-                 use_postln_in_modulation=False, normalize_modulator=False):
+                 use_postln_in_modulation=True, normalize_modulator=False, norm_cfg=None):
         super().__init__()
 
         self.dim = dim
@@ -91,7 +60,9 @@ class FocalModulation(nn.Module):
         self.normalize_modulator = normalize_modulator
 
         self.f = nn.Linear(dim, 2 * dim + (self.focal_level + 1), bias=bias)
-        self.h = nn.Conv2d(dim, dim, kernel_size=1, stride=1, bias=bias)
+        self.h = nn.Sequential(
+            nn.Conv2d(dim, dim, 1, 1, bias=False),
+        )
 
         self.act = nn.GELU()
         self.proj = nn.Linear(dim, dim)
@@ -198,7 +169,7 @@ class FocalNetBlock(nn.Module):
                  focal_level=1, focal_window=3,
                  use_layerscale=False, layerscale_value=1e-4,
                  use_postln=False, use_postln_in_modulation=False,
-                 normalize_modulator=False
+                 normalize_modulator=False,
                  ):
         super().__init__()
         self.dim = dim
@@ -213,7 +184,7 @@ class FocalNetBlock(nn.Module):
 
         self.modulation = FocalModulation(
             dim, proj_drop=drop, focal_window=focal_window, focal_level=self.focal_level,
-            use_postln_in_modulation=use_postln_in_modulation, normalize_modulator=normalize_modulator
+            use_postln_in_modulation=use_postln_in_modulation, normalize_modulator=normalize_modulator,
         )
 
         self.drop_path = DropPath(drop_path) if drop_path > 0. else nn.Identity()
@@ -279,7 +250,7 @@ class BasicLayer(nn.Module):
                  use_layerscale=False, layerscale_value=1e-4,
                  use_postln=False,
                  use_postln_in_modulation=False,
-                 normalize_modulator=False
+                 normalize_modulator=False,
                  ):
 
         super().__init__()
@@ -391,7 +362,7 @@ class FocalNetDecoder(BaseDecodeHead):
                  layerscale_value=1/torch.sqrt(torch.tensor(2)),
                  use_postln=False,
                  use_postln_in_modulation=False,
-                 normalize_modulator=False,
+                 normalize_modulator=True,
                  up_sampling='bilinear',
                  encoder_channels=[96, 192, 384, 768],
                  **kwargs
@@ -404,8 +375,6 @@ class FocalNetDecoder(BaseDecodeHead):
           configuration file from config.py
         """
 
-        # self.n_lat = config.n_lat - (config.cut_lateral_boundary * 2)
-        # self.n_lon = config.n_lon - (config.cut_lateral_boundary * 2)
         self.depths = depths
         self.mlp_ratio = mlp_ratio
         self.drop_rate = drop_rate
@@ -476,9 +445,6 @@ class FocalNetDecoder(BaseDecodeHead):
 
             self.layers.append(layer)
 
-        # create regression head
-        self.BT_block = regression_head(self.decoder_out_channels[-1])
-        self.NDVI_block = regression_head(self.decoder_out_channels[-1])
 
         self._init_weights()
 
@@ -496,20 +462,6 @@ class FocalNetDecoder(BaseDecodeHead):
                 nn.init.constant_(m.weight, 1.0)
 
         self.apply(init_func)
-
-        for m in self.BT_block.children():
-            if hasattr(m, '_init_weights'):
-                m._init_weights()
-            else:
-                if isinstance(m, nn.Linear) or isinstance(m, nn.Conv2d):
-                     trunc_normal_(m.weight, std=.02)
-
-        for m in self.NDVI_block.children():
-            if hasattr(m, '_init_weights'):
-                m._init_weights()
-            else:
-                if isinstance(m, nn.Linear) or isinstance(m, nn.Conv2d):
-                    trunc_normal_(m.weight, std=.02)
 
 
     @torch.jit.ignore
