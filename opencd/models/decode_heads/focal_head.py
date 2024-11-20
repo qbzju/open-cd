@@ -49,7 +49,7 @@ class Mlp(nn.Module):
 
 class FocalModulation(nn.Module):
     def __init__(self, dim, focal_window, focal_level, focal_factor=2, bias=True, proj_drop=0.,
-                 use_postln_in_modulation=False, normalize_modulator=True):
+                 use_postln_in_modulation=False, normalize_modulator=False):
         super().__init__()
 
         self.dim = dim

@@ -29,6 +29,10 @@ model = dict(
         focal_windows=[3, 3, 3, 3],
         focal_levels=[2, 2, 2, 2],
         out_indices=(0, 1, 2, 3),
+        normalize_modulator=True,
+        use_postln=True,
+        use_postln_in_modulation=True,
+        use_layerscale=True
     ),
     decode_head=dict(
         type='FocalNetDecoder',
@@ -36,6 +40,9 @@ model = dict(
         in_index=(0, 1, 2, 3),
         patch_size=patch_size,
         encoder_channels=[v for v in [embed_dim, embed_dim*2, embed_dim*4, embed_dim*8]],
+        normalize_modulator=False,
+        use_postln=False,
+        use_postln_in_modulation=False,
         num_classes=2,
         loss_decode=dict(
             type='mmseg.CrossEntropyLoss', use_sigmoid=False, loss_weight=1.0),

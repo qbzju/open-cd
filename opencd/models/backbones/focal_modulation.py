@@ -46,7 +46,8 @@ class FocalModulation(nn.Module):
         use_postln (bool, default=True): Whether use post-modulation layernorm
     """
 
-    def __init__(self, dim, proj_drop=0., focal_level=2, focal_window=7, focal_factor=2, use_postln=False, normalize_modulator=True):
+    def __init__(self, dim, proj_drop=0., focal_level=2, focal_window=7, focal_factor=2, 
+                 use_postln=False, normalize_modulator=False, use_postln_in_modulation=False):
 
         super().__init__()
         self.dim = dim
@@ -56,6 +57,7 @@ class FocalModulation(nn.Module):
         self.focal_window = focal_window
         self.focal_factor = focal_factor
         self.use_postln = use_postln
+        self.use_postln_in_modulation = use_postln_in_modulation
 
         self.f = nn.Linear(dim, 2*dim+(self.focal_level+1), bias=True)
         self.h = nn.Conv2d(dim, dim, kernel_size=1, stride=1, padding=0, groups=1, bias=True)
@@ -67,7 +69,7 @@ class FocalModulation(nn.Module):
 
         self.normalize_modulator = normalize_modulator
 
-        if self.use_postln:
+        if self.use_postln_in_modulation:
             self.ln = nn.LayerNorm(dim)
 
         for k in range(self.focal_level):
@@ -125,17 +127,20 @@ class FocalModulationBlock(nn.Module):
 
     def __init__(self, dim, mlp_ratio=4., drop=0., drop_path=0., 
                  act_layer=nn.GELU, norm_layer=nn.LayerNorm,
-                 focal_level=2, focal_window=9, use_layerscale=True, layerscale_value=1e-4):
+                 focal_level=2, focal_window=9, use_layerscale=False, layerscale_value=1e-4, normalize_modulator=False,
+                 use_postln=False, use_postln_in_modulation=False):
         super().__init__()
         self.dim = dim
         self.mlp_ratio = mlp_ratio
         self.focal_window = focal_window
         self.focal_level = focal_level
         self.use_layerscale = use_layerscale
+        self.use_postln = use_postln
 
         self.norm1 = norm_layer(dim)
         self.modulation = FocalModulation(
-            dim, focal_window=self.focal_window, focal_level=self.focal_level, proj_drop=drop
+            dim, focal_window=self.focal_window, focal_level=self.focal_level, proj_drop=drop, normalize_modulator=normalize_modulator,
+            use_postln=use_postln, use_postln_in_modulation=use_postln_in_modulation
         )            
 
         self.drop_path = DropPath(drop_path) if drop_path > 0. else nn.Identity()
@@ -164,7 +169,7 @@ class FocalModulationBlock(nn.Module):
         assert L == H * W, "input feature has wrong size"
 
         shortcut = x
-        x = self.norm1(x)
+        x = x if self.use_postln else self.norm1(x)
         x = x.view(B, H, W, C)
         
         # FM
@@ -205,7 +210,10 @@ class BasicLayer(nn.Module):
                  focal_level=2, 
                  use_conv_embed=False,      
                  use_layerscale=False,                           
-                 use_checkpoint=False
+                 use_checkpoint=False,
+                 use_postln=False,
+                 normalize_modulator=False,
+                 use_postln_in_modulation=False
         ):
         super().__init__()
         self.depth = depth
@@ -221,7 +229,11 @@ class BasicLayer(nn.Module):
                 focal_window=focal_window, 
                 focal_level=focal_level, 
                 use_layerscale=use_layerscale, 
-                norm_layer=norm_layer)
+                norm_layer=norm_layer,
+                use_postln=use_postln,
+                normalize_modulator=normalize_modulator,
+                use_postln_in_modulation=use_postln_in_modulation
+            )
             for i in range(depth)])
 
         # patch merging layer
@@ -355,7 +367,10 @@ class FocalNet(nn.Module):
                  focal_windows=[9,9,9,9],
                  use_conv_embed=False, 
                  use_layerscale=False, 
+                 use_postln=False,
+                 normalize_modulator=False,
                  use_checkpoint=False, 
+                 use_postln_in_modulation=False
         ):
         super().__init__()
 
@@ -393,7 +408,10 @@ class FocalNet(nn.Module):
                 focal_level=focal_levels[i_layer], 
                 use_conv_embed=use_conv_embed,
                 use_layerscale=use_layerscale, 
-                use_checkpoint=use_checkpoint
+                use_checkpoint=use_checkpoint,
+                use_postln=use_postln,
+                normalize_modulator=normalize_modulator,
+                use_postln_in_modulation=use_postln_in_modulation
                 )
             self.layers.append(layer)
             # self.fusion.append(FocalFusion(int(embed_dim * 2 ** i_layer)))
