@@ -12,8 +12,9 @@ from .ds_fpn_head import DS_FPNHead
 from .changerstar_head import ChangeStarHead
 from .farseg_head import FarSegHead
 from .uper_custom import CustomUPerHead
+from .focal_head import FocalNetDecoder
 
 __all__ = ['BITHead', 'Changer', 'IdentityHead', 'DSIdentityHead', 'TinyHead',
            'STAHead', 'MultiHeadDecoder', 'GeneralSCDHead', 'BitemporalAdapterHead',
            'BAN_MLPDecoder', 'BAN_BITHead', 'MLPSegHead', 'DS_FPNHead', 
-           'ChangeStarHead', 'FarSegHead', 'CustomUPerHead']
+           'ChangeStarHead', 'FarSegHead', 'CustomUPerHead', 'FocalNetDecoder']
