@@ -46,7 +46,7 @@ class FocalModulation(nn.Module):
         use_postln (bool, default=True): Whether use post-modulation layernorm
     """
 
-    def __init__(self, dim, proj_drop=0., focal_level=2, focal_window=7, focal_factor=2, use_postln=True):
+    def __init__(self, dim, proj_drop=0., focal_level=2, focal_window=7, focal_factor=2, use_postln=False, normalize_modulator=True):
 
         super().__init__()
         self.dim = dim
@@ -64,6 +64,8 @@ class FocalModulation(nn.Module):
         self.proj = nn.Linear(dim, dim)
         self.proj_drop = nn.Dropout(proj_drop)
         self.focal_layers = nn.ModuleList()
+
+        self.normalize_modulator = normalize_modulator
 
         if self.use_postln:
             self.ln = nn.LayerNorm(dim)
@@ -95,6 +97,9 @@ class FocalModulation(nn.Module):
             ctx_all = ctx_all + ctx*gates[:, l:l+1]
         ctx_global = self.act(ctx.mean(2, keepdim=True).mean(3, keepdim=True))
         ctx_all = ctx_all + ctx_global*gates[:,self.focal_level:]
+
+        if self.normalize_modulator:
+            ctx_all = ctx_all / (self.focal_level + 1)
 
         x_out = q * self.h(ctx_all)
         x_out = x_out.permute(0, 2, 3, 1).contiguous()
