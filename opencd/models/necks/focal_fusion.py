@@ -51,10 +51,9 @@ class FocalFusion(nn.Module):
         outs = []
         for i in range(len(xA)):
             diff = torch.abs(xA[i] - xB[i])
-            # gate = self.gate(self.gap_sigmoid(diff)) # [B, C, 1, 1]
-            # out = diff * gate # [B, C, H, W]
+            gate = self.gate(self.gap_sigmoid(diff)) # [B, C, 1, 1]
+            out = diff * gate # [B, C, H, W]
 
-            out = self.norms[i](diff)
             outs.append(out)
 
         return outs
