@@ -25,20 +25,20 @@ class ChannelAttention(nn.Module):
 class FocalFusion(nn.Module):
     def __init__(self, in_channels, patch_size=4):
         super().__init__()
-        self.gap_sigmoid = nn.Sequential(
-            nn.AdaptiveAvgPool2d(1),
-            nn.Sigmoid()
-        )
+        # self.gap_sigmoid = nn.Sequential(
+        #     nn.AdaptiveAvgPool2d(1),
+        #     nn.Sigmoid()
+        # )
 
-        self.gate = nn.Softmax(dim=1)
+        # self.gate = nn.Softmax(dim=1)
 
-        self.norms = nn.ModuleList([
-            nn.BatchNorm2d(c) for c in in_channels
-        ])
+        # self.norms = nn.ModuleList([
+        #     nn.BatchNorm2d(c) for c in in_channels
+        # ])
         
-        self.channel_attentions = nn.ModuleList([
-            ChannelAttention(c) for c in in_channels
-        ])
+        # self.channel_attentions = nn.ModuleList([
+        #     ChannelAttention(c) for c in in_channels
+        # ])
 
 
     def forward(self, xA, xB):
@@ -52,14 +52,14 @@ class FocalFusion(nn.Module):
         outs = []
         for i in range(len(xA)):
             diff = torch.abs(xA[i] - xB[i])
-            out = xA[i] + xB[i]
-            out = self.norms[i](out)
+            # out = xA[i] + xB[i]
+            # out = self.norms[i](out)
 
-            out = self.channel_attentions[i](diff) * out
+            # out = self.channel_attentions[i](diff) * out
             
-            gate = self.gate(self.gap_sigmoid(out)) # [B, C, 1, 1]
-            out = out * gate # [B, C, H, W]
-            outs.append(out)
+            # gate = self.gate(self.gap_sigmoid(out)) # [B, C, 1, 1]
+            # out = out * gate # [B, C, H, W]
+            outs.append(diff)
 
         return outs
 
