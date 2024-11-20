@@ -23,7 +23,8 @@ test_dataloader = dict(
 )
 
 # AdamW optimizer, no weight decay for position embedding & layer norm in backbone
-optimizer = dict(_delete_=True, type='AdamW', lr=0.0000006, betas=(0.9, 0.999), weight_decay=0.01,
+optimizer = dict(_delete_=True, type='AdamW', lr=0.00006, betas=(0.9, 0.999), weight_decay=0.01,
+                 eps=1e-8, clip_norm=1.0,
                  paramwise_cfg=dict(custom_keys={'absolute_pos_embed': dict(decay_mult=0.),
                                                  'relative_position_bias_table': dict(decay_mult=0.),
                                                  'norm': dict(decay_mult=0.)}))
