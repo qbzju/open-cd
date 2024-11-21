@@ -394,7 +394,6 @@ class FocalNet(nn.Module):
 
         # build layers
         self.layers = nn.ModuleList()
-        self.fusion = nn.ModuleList()
         for i_layer in range(self.num_layers):
             layer = BasicLayer(
                 dim=int(embed_dim * 2 ** i_layer),
@@ -414,7 +413,6 @@ class FocalNet(nn.Module):
                 use_postln_in_modulation=use_postln_in_modulation
                 )
             self.layers.append(layer)
-            # self.fusion.append(FocalFusion(int(embed_dim * 2 ** i_layer)))
 
         num_features = [int(embed_dim * 2 ** i) for i in range(self.num_layers)]
         self.num_features = num_features
