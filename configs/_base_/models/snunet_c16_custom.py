@@ -48,9 +48,12 @@ model = dict(
         loss_decode=dict(
             type='mmseg.CrossEntropyLoss', use_sigmoid=False, loss_weight=1.0),
         ),
-    neck=dict(type='FocalFusion', 
-              in_channels=[embed_dim, embed_dim*2, embed_dim*4, embed_dim*8], 
-              patch_size=patch_size,
+    # neck=dict(type='FocalFusion', 
+    #           in_channels=[embed_dim, embed_dim*2, embed_dim*4, embed_dim*8], 
+    #           patch_size=patch_size,
+    #           ),
+    neck=dict(type='FeatureFusionNeck', 
+              policy='diff',
               ),
     # auxiliary_head=dict(
     #     type='mmseg.FCNHead',
