@@ -188,6 +188,8 @@ class SiamEncoderDecoder(BaseSegmentor):
         losses = dict()
 
         loss_decode = self._decode_head_forward_train(x, data_samples)
+        if loss_decode['decode.loss_ce'] > 1:
+            print(loss_decode)
         losses.update(loss_decode)
 
         if self.with_auxiliary_head:

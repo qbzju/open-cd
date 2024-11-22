@@ -50,9 +50,8 @@ class FocalFusion(nn.Module):
         outs = []
         for i, (xa_i, xb_i) in enumerate(zip(xA, xB)):   
             xa, xb = self.base_forward(xa_i, xb_i, i)
-            diff = xa - xb
+            diff = xa - xb 
             gate = self.gate(self.gap_sigmoid(diff)) # [B, C, 1, 1]
             out = diff * gate # [B, C, H, W]
-            
             outs.append(out)
         return outs

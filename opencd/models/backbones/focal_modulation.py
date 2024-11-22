@@ -104,10 +104,10 @@ class FocalModulation(nn.Module):
             ctx_all = ctx_all + ctx*gates[:, l:l+1]
         # change ctx to ctx_all 
         ctx_global = self.act(ctx_all.mean(2, keepdim=True).mean(3, keepdim=True))
-        ctx_all = ctx_all + ctx_global*gates[:,self.focal_level:]
+        ctx_all = (ctx_all + ctx_global*gates[:,self.focal_level:]) / (self.focal_level + 1)
 
-        if self.normalize_modulator:
-            ctx_all = ctx_all / (self.focal_level + 1)
+        # if self.normalize_modulator:
+        #     ctx_all = ctx_all / (self.focal_level + 1)
 
         x_out = q * self.h(ctx_all)
         x_out = x_out.permute(0, 2, 3, 1).contiguous()
@@ -288,10 +288,10 @@ class BasicLayer(nn.Module):
             ctx_all = ctx_all + ctx * gates[:, :, i:i+1]
 
         ctx_global = self.act(ctx_all.mean(dim=1, keepdim=True))
-        ctx_all = ctx_all + ctx_global * gates[:, :, self.depth:]
+        ctx_all = (ctx_all + ctx_global * gates[:, :, self.depth:]) / (self.depth + 1)
 
-        if self.normalize_layer:
-            ctx_all = ctx_all / (self.depth + 1)
+        # if self.normalize_layer:
+        #     ctx_all = ctx_all / (self.depth + 1)
 
         # TODO: convert after multiply
         q = q.view(B, H, W, C).permute(0, 3, 1, 2).contiguous()

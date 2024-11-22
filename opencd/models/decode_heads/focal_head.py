@@ -107,11 +107,11 @@ class FocalModulation(nn.Module):
 
         # change ctx to ctx_all 
         ctx_global = self.act(ctx_all.mean(2, keepdim=True).mean(3, keepdim=True))
-        ctx_all = ctx_all + ctx_global * gates[:, self.focal_level:]
+        ctx_all = (ctx_all + ctx_global * gates[:, self.focal_level:]) / (self.focal_level + 1)
 
         # normalize context
-        if self.normalize_modulator:
-            ctx_all = ctx_all / (self.focal_level + 1)
+        # if self.normalize_modulator:
+        #     ctx_all = ctx_all / (self.focal_level + 1)
 
         # focal modulation
         self.modulator = self.h(ctx_all)
@@ -323,7 +323,7 @@ class BasicLayer(nn.Module):
             ctx_all = ctx_all + ctx * gates[:, :, i:i+1]
 
         ctx_global = self.act(ctx_all.mean(dim=1, keepdim=True))
-        ctx_all = ctx_all + ctx_global * gates[:, :, self.depth:]
+        ctx_all = (ctx_all + ctx_global * gates[:, :, self.depth:]) / (self.depth + 1)
 
         q = q.view(B, H, W, C).permute(0, 3, 1, 2).contiguous()
         x_out = q * self.h(ctx_all.view(B, H, W, C).permute(0, 3, 1, 2).contiguous())
@@ -399,6 +399,7 @@ class FocalNetDecoder(BaseDecodeHead):
                  normalize_modulator=True,
                  up_sampling='bilinear',
                  encoder_channels=[96, 192, 384, 768],
+                 norm_layer=nn.LayerNorm,
                  **kwargs
                  ):
 
@@ -478,6 +479,11 @@ class FocalNetDecoder(BaseDecodeHead):
                                )
 
             self.layers.append(layer)
+        
+        for i_layer in range(self.n_layers):
+            layer = norm_layer(self.decoder_out_channels[i_layer])
+            layer_name = f'norm{i_layer}'
+            self.add_module(layer_name, layer)
 
 
         self._init_weights()
@@ -526,18 +532,19 @@ class FocalNetDecoder(BaseDecodeHead):
             _, _, H, W = x_i.shape
 
             x_out, H, W = self.layers[i](x_i, H, W)
-
+            # normalize the output
+            B, C, H, W = x_out.shape
+            x_out = x_out.permute(0, 2, 3, 1).contiguous()
+            x_out = getattr(self, f'norm{i}')(x_out)
+            x_out = x_out.permute(0, 3, 1, 2).contiguous()
+    
         if self.patch_size != 1:
-            #x_out = F.interpolate(x_out, size=(self.n_lat, self.n_lon), mode='bicubic')
             x_out = F.interpolate(x_out, scale_factor=self.patch_size, mode='bilinear', align_corners=False)
 
         return x_out
 
     def forward(self, inputs):
         output = self._forward_feature(inputs)
-
-        if torch.isnan(output).any() or torch.isinf(output).any():
-            import pdb; pdb.set_trace()
         output = self.cls_seg(output)        
 
         return output
