@@ -65,6 +65,8 @@ class FocalModulation(nn.Module):
         self.act = nn.GELU()
         self.proj = nn.Linear(dim, dim)
         self.proj_drop = nn.Dropout(proj_drop)
+
+        self.gate_sm = nn.Softmax(dim=1)
         self.focal_layers = nn.ModuleList()
 
         self.normalize_modulator = normalize_modulator
@@ -93,11 +95,15 @@ class FocalModulation(nn.Module):
         x = x.permute(0, 3, 1, 2).contiguous()
         q, ctx, gates = torch.split(x, (C, C, self.focal_level+1), 1)
         
+        # use softmax to normalize the gates
+        gates = self.gate_sm(gates)
+
         ctx_all = 0
         for l in range(self.focal_level):                     
             ctx = self.focal_layers[l](ctx)
             ctx_all = ctx_all + ctx*gates[:, l:l+1]
-        ctx_global = self.act(ctx.mean(2, keepdim=True).mean(3, keepdim=True))
+        # change ctx to ctx_all 
+        ctx_global = self.act(ctx_all.mean(2, keepdim=True).mean(3, keepdim=True))
         ctx_all = ctx_all + ctx_global*gates[:,self.focal_level:]
 
         if self.normalize_modulator:
@@ -168,7 +174,7 @@ class FocalModulationBlock(nn.Module):
         H, W = self.H, self.W
         assert L == H * W, "input feature has wrong size"
 
-        shortcut = x
+        # remove shortcut
         x = x if self.use_postln else self.norm1(x)
         x = x.view(B, H, W, C)
         
@@ -176,7 +182,7 @@ class FocalModulationBlock(nn.Module):
         x = self.modulation(x).view(B, H * W, C)
 
         # FFN
-        x = shortcut + self.drop_path(self.gamma_1 * x)
+        x = self.drop_path(self.gamma_1 * x)
         x = x + self.drop_path(self.gamma_2 * self.mlp(self.norm2(x)))
 
         return x
@@ -213,11 +219,23 @@ class BasicLayer(nn.Module):
                  use_checkpoint=False,
                  use_postln=False,
                  normalize_modulator=False,
-                 use_postln_in_modulation=False
+                 use_postln_in_modulation=False,
+                 normalize_layer=False
         ):
         super().__init__()
         self.depth = depth
         self.use_checkpoint = use_checkpoint
+
+        # TODO: add linear gate
+        self.f = nn.Linear(dim, 2*dim+(self.depth+1), bias=True)
+        self.act = nn.GELU()
+        self.h = nn.Conv2d(dim, dim, kernel_size=1, stride=1, padding=0, groups=1, bias=True)
+        self.proj = nn.Linear(dim, dim)
+        self.proj_drop = nn.Dropout(drop)
+
+        self.gate_sm = nn.Softmax(dim=2)
+
+        self.normalize_layer = normalize_layer
 
         # build blocks
         self.blocks = nn.ModuleList([
@@ -256,19 +274,45 @@ class BasicLayer(nn.Module):
             x: Input feature, tensor size (B, H*W, C).
             H, W: Spatial resolution of the input feature.
         """
+        B, L, C = x.shape
 
-        for blk in self.blocks:
+        x = self.f(x)
+        q, ctx, gates = torch.split(x, (C, C, self.depth+1), 2)  # B L, (C, C, self.depth+1)
+        # use softmax to normalize the gates
+        gates = self.gate_sm(gates)
+
+        ctx_all = 0
+        for i, blk in enumerate(self.blocks):
             blk.H, blk.W = H, W
-            x = blk(x)
+            ctx = blk(ctx)
+            ctx_all = ctx_all + ctx * gates[:, :, i:i+1]
+
+        ctx_global = self.act(ctx_all.mean(dim=1, keepdim=True))
+        ctx_all = ctx_all + ctx_global * gates[:, :, self.depth:]
+
+        if self.normalize_layer:
+            ctx_all = ctx_all / (self.depth + 1)
+
+        # TODO: convert after multiply
+        q = q.view(B, H, W, C).permute(0, 3, 1, 2).contiguous()
+        x_out = q * self.h(ctx_all.view(B, H, W, C).permute(0, 3, 1, 2).contiguous())
+        # TODO: add ln
+        # if self.use_postln:
+        #     x = self.ln(x)
+
+        x_out = x_out.permute(0, 2, 3, 1).view(B, L, C).contiguous()
+        x_out = self.proj(x_out)
+        x_out = self.proj_drop(x_out)
+
 
         if self.downsample is not None:
-            x_reshaped = x.transpose(1, 2).view(x.shape[0], x.shape[-1], H, W)
+            x_reshaped = x_out.transpose(1, 2).view(x_out.shape[0], x_out.shape[-1], H, W)
             x_down = self.downsample(x_reshaped)      
             x_down = x_down.flatten(2).transpose(1, 2)            
             Wh, Ww = (H + 1) // 2, (W + 1) // 2
-            return x, H, W, x_down, Wh, Ww
+            return x_out, H, W, x_down, Wh, Ww
         else:
-            return x, H, W, x, H, W
+            return x_out, H, W, x_out, H, W
 
 
 class PatchEmbed(nn.Module):
@@ -391,6 +435,8 @@ class FocalNet(nn.Module):
 
         # stochastic depth
         dpr = [x.item() for x in torch.linspace(0, drop_path_rate, sum(depths))]  # stochastic depth decay rule
+
+        # TODO: add linear gate
 
         # build layers
         self.layers = nn.ModuleList()

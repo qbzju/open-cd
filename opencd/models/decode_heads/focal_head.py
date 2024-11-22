@@ -13,7 +13,6 @@ import torch.nn.functional as F
 from timm.models.layers import DropPath, trunc_normal_
 from opencd.registry import MODELS
 from mmseg.models.decode_heads.decode_head import BaseDecodeHead
-from mmcv.cnn import build_norm_layer
 
 # ------------------------------------------------------------------
 
@@ -67,6 +66,8 @@ class FocalModulation(nn.Module):
         self.act = nn.GELU()
         self.proj = nn.Linear(dim, dim)
         self.proj_drop = nn.Dropout(proj_drop)
+
+        self.gate_sm = nn.Softmax(dim=1)
         self.focal_layers = nn.ModuleList()
 
         self.kernel_sizes = []
@@ -93,16 +94,20 @@ class FocalModulation(nn.Module):
         # pre linear projection
 
         x = self.f(x).permute(0, 3, 1, 2).contiguous()
-        q, ctx, self.gates = torch.split(x, (C, C, self.focal_level + 1), 1)
+        q, ctx, gates = torch.split(x, (C, C, self.focal_level + 1), 1)
+
+        # use softmax to normalize the gates
+        gates = self.gate_sm(gates)
 
         # context aggreation
         ctx_all = 0
         for l in range(self.focal_level):
             ctx = self.focal_layers[l](ctx)
-            ctx_all = ctx_all + ctx * self.gates[:, l:l + 1]
+            ctx_all = ctx_all + ctx * gates[:, l:l + 1]
 
-        ctx_global = self.act(ctx.mean(2, keepdim=True).mean(3, keepdim=True))
-        ctx_all = ctx_all + ctx_global * self.gates[:, self.focal_level:]
+        # change ctx to ctx_all 
+        ctx_global = self.act(ctx_all.mean(2, keepdim=True).mean(3, keepdim=True))
+        ctx_all = ctx_all + ctx_global * gates[:, self.focal_level:]
 
         # normalize context
         if self.normalize_modulator:
@@ -207,7 +212,7 @@ class FocalNetBlock(nn.Module):
         H, W = self.H, self.W
         B, L, C = x.shape
 
-        shortcut = x
+        # remove shortcut
 
         # Focal Modulation
         x = x if self.use_postln else self.norm1(x)
@@ -216,7 +221,7 @@ class FocalNetBlock(nn.Module):
         x = x if not self.use_postln else self.norm1(x)
 
         # FFN
-        x = shortcut + self.drop_path(self.gamma_1 * x)
+        x = self.drop_path(self.gamma_1 * x)
         x = x + self.drop_path(
             self.gamma_2 * (self.norm2(self.mlp(x)) if self.use_postln else self.mlp(self.norm2(x))))
 
@@ -260,6 +265,15 @@ class BasicLayer(nn.Module):
         self.use_checkpoint = use_checkpoint
         self.upsampling_type = upsampling_type
 
+        # TODO: add linear gate
+        self.f = nn.Linear(dim, 2*dim+(self.depth+1), bias=True)
+        self.act = nn.GELU()
+        self.h = nn.Conv2d(dim, dim, kernel_size=1, stride=1, padding=0, groups=1, bias=True)
+        self.proj = nn.Linear(dim, dim)
+        self.proj_drop = nn.Dropout(drop)
+
+        self.gate_sm = nn.Softmax(dim=2)
+
         # build blocks
         self.blocks = nn.ModuleList([
             FocalNetBlock(
@@ -290,21 +304,41 @@ class BasicLayer(nn.Module):
             self.upsample = None
 
     def forward(self, x, H, W):
+        
         x = x.flatten(2).transpose(1, 2)  # B Ph*Pw C
         Ho, Wo = H, W
 
-        for blk in self.blocks:
-            blk.H, blk.W = Ho, Wo
-            x = blk(x)
+        B, L, C = x.shape
 
-        x = x.transpose(1, 2).reshape(x.shape[0], -1, H, W)
-        
+        x = self.f(x)
+        q, ctx, gates = torch.split(x, (C, C, self.depth+1), 2)  # B L, (C, C, self.depth+1)
+        # use softmax to normalize the gates
+        gates = self.gate_sm(gates)
+
+        ctx_all = 0
+
+        for i, blk in enumerate(self.blocks):
+            blk.H, blk.W = Ho, Wo
+            ctx = blk(ctx)
+            ctx_all = ctx_all + ctx * gates[:, :, i:i+1]
+
+        ctx_global = self.act(ctx_all.mean(dim=1, keepdim=True))
+        ctx_all = ctx_all + ctx_global * gates[:, :, self.depth:]
+
+        q = q.view(B, H, W, C).permute(0, 3, 1, 2).contiguous()
+        x_out = q * self.h(ctx_all.view(B, H, W, C).permute(0, 3, 1, 2).contiguous())
+
+        x_out = x_out.permute(0, 2, 3, 1).view(B, -1, C).contiguous()
+        x_out = self.proj(x_out)  # [B, L, C]
+        x_out = self.proj_drop(x_out)
+        x_out = x_out.view(B, H, W, C).permute(0, 3, 1, 2).contiguous()
+
         if self.upsample is not None:
-            x, Ho, Wo = self.upsample(x)
+            x_out, Ho, Wo = self.upsample(x_out)
         else:
             Ho, Wo = H, W
 
-        return x, Ho, Wo
+        return x_out, Ho, Wo
 
 class PatchEmbed(nn.Module):
     """ Image to Patch Embedding
@@ -501,6 +535,9 @@ class FocalNetDecoder(BaseDecodeHead):
 
     def forward(self, inputs):
         output = self._forward_feature(inputs)
+
+        if torch.isnan(output).any() or torch.isinf(output).any():
+            import pdb; pdb.set_trace()
         output = self.cls_seg(output)        
 
         return output

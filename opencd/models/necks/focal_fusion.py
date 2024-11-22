@@ -27,6 +27,13 @@ class FocalFusion(nn.Module):
             ChannelAttention(c) for c in in_channels
         ])
 
+        self.gap_sigmoid = nn.Sequential(
+            nn.AdaptiveAvgPool2d(1),
+            nn.Sigmoid()
+        )
+
+        self.gate = nn.Softmax(dim=1)
+
     def base_forward(self, xa, xb, i):
         xa = self.channel_attentions[i](xa) * xa
         xb = self.channel_attentions[i](xb) * xb
@@ -41,8 +48,11 @@ class FocalFusion(nn.Module):
             "backbone should be of equal length"
 
         outs = []
-        for i in range(len(xA)):   
-            xa, xb = self.base_forward(xA[i], xB[i], i)
-            outs.append(xa + xb)
-
+        for i, (xa_i, xb_i) in enumerate(zip(xA, xB)):   
+            xa, xb = self.base_forward(xa_i, xb_i, i)
+            diff = xa - xb
+            gate = self.gate(self.gap_sigmoid(diff)) # [B, C, 1, 1]
+            out = diff * gate # [B, C, H, W]
+            
+            outs.append(out)
         return outs
