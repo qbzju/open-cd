@@ -14,16 +14,6 @@ from timm.models.layers import DropPath, trunc_normal_
 from opencd.registry import MODELS
 from mmseg.models.decode_heads.decode_head import BaseDecodeHead
 
-# ------------------------------------------------------------------
-
-# ------------------------------------------------------------
-# Regression Head
-# Contact person: Mohamad Hakam Shams Eddin <shams@iai.uni-bonn.de>
-# ------------------------------------------------------------
-
-import torch
-import torch.nn as nn
-
 # ------------------------------------------------------------
 
 
@@ -58,10 +48,9 @@ class FocalModulation(nn.Module):
         self.use_postln_in_modulation = use_postln_in_modulation
         self.normalize_modulator = normalize_modulator
 
-        self.f = nn.Linear(dim, 2 * dim + (self.focal_level + 1), bias=bias)
-        self.h = nn.Sequential(
-            nn.Conv2d(dim, dim, 1, 1, bias=False),
-        )
+        self.f = nn.Linear(dim, 2 * dim + (self.focal_level + 1), bias=True)
+        self.h = nn.Conv2d(dim, dim, kernel_size=1,
+                           stride=1, padding=0, bias=False)
 
         self.act = nn.GELU()
         self.proj = nn.Linear(dim, dim)
@@ -105,9 +94,11 @@ class FocalModulation(nn.Module):
             ctx = self.focal_layers[l](ctx)
             ctx_all = ctx_all + ctx * gates[:, l:l + 1]
 
-        # change ctx to ctx_all 
-        ctx_global = self.act(ctx_all.mean(2, keepdim=True).mean(3, keepdim=True))
-        ctx_all = (ctx_all + ctx_global * gates[:, self.focal_level:]) / (self.focal_level + 1)
+        # change ctx to ctx_all
+        ctx_global = self.act(ctx_all.mean(
+            2, keepdim=True).mean(3, keepdim=True))
+        ctx_all = (ctx_all + ctx_global *
+                   gates[:, self.focal_level:]) / (self.focal_level + 1)
 
         # normalize context
         # if self.normalize_modulator:
@@ -192,18 +183,22 @@ class FocalNetBlock(nn.Module):
             use_postln_in_modulation=use_postln_in_modulation, normalize_modulator=normalize_modulator,
         )
 
-        self.drop_path = DropPath(drop_path) if drop_path > 0. else nn.Identity()
+        self.drop_path = DropPath(
+            drop_path) if drop_path > 0. else nn.Identity()
 
         self.norm2 = nn.LayerNorm(dim)
 
         mlp_hidden_dim = int(dim * mlp_ratio)
-        self.mlp = Mlp(in_features=dim, hidden_features=mlp_hidden_dim, out_features=out_dim, act_layer=act_layer, drop=drop)
+        self.mlp = Mlp(in_features=dim, hidden_features=mlp_hidden_dim,
+                       out_features=out_dim, act_layer=act_layer, drop=drop)
 
         self.gamma_1 = 1.0
         self.gamma_2 = 1.0
         if use_layerscale:
-            self.gamma_1 = nn.Parameter(layerscale_value * torch.ones((dim)), requires_grad=True)
-            self.gamma_2 = nn.Parameter(layerscale_value * torch.ones((dim)), requires_grad=True)
+            self.gamma_1 = nn.Parameter(
+                layerscale_value * torch.ones((dim)), requires_grad=True)
+            self.gamma_2 = nn.Parameter(
+                layerscale_value * torch.ones((dim)), requires_grad=True)
 
         self.H = None
         self.W = None
@@ -268,7 +263,8 @@ class BasicLayer(nn.Module):
         # TODO: add linear gate
         self.f = nn.Linear(dim, 2*dim+(self.depth+1), bias=True)
         self.act = nn.GELU()
-        self.h = nn.Conv2d(dim, dim, kernel_size=1, stride=1, padding=0, groups=1, bias=True)
+        self.h = nn.Conv2d(dim, dim, kernel_size=1, stride=1,
+                           padding=0, groups=1, bias=True)
         self.proj = nn.Linear(dim, dim)
         self.proj_drop = nn.Dropout(drop)
 
@@ -282,7 +278,8 @@ class BasicLayer(nn.Module):
                 input_resolution=input_resolution,
                 mlp_ratio=mlp_ratio,
                 drop=drop,
-                drop_path=drop_path[i] if isinstance(drop_path, list) else drop_path,
+                drop_path=drop_path[i] if isinstance(
+                    drop_path, list) else drop_path,
                 focal_level=focal_level,
                 focal_window=focal_window,
                 use_layerscale=use_layerscale,
@@ -304,14 +301,15 @@ class BasicLayer(nn.Module):
             self.upsample = None
 
     def forward(self, x, H, W):
-        
+
         x = x.flatten(2).transpose(1, 2)  # B Ph*Pw C
         Ho, Wo = H, W
 
         B, L, C = x.shape
 
         x = self.f(x)
-        q, ctx, gates = torch.split(x, (C, C, self.depth+1), 2)  # B L, (C, C, self.depth+1)
+        # B L, (C, C, self.depth+1)
+        q, ctx, gates = torch.split(x, (C, C, self.depth+1), 2)
         # use softmax to normalize the gates
         gates = self.gate_sm(gates)
 
@@ -323,10 +321,12 @@ class BasicLayer(nn.Module):
             ctx_all = ctx_all + ctx * gates[:, :, i:i+1]
 
         ctx_global = self.act(ctx_all.mean(dim=1, keepdim=True))
-        ctx_all = (ctx_all + ctx_global * gates[:, :, self.depth:]) / (self.depth + 1)
+        ctx_all = (ctx_all + ctx_global *
+                   gates[:, :, self.depth:]) / (self.depth + 1)
 
         q = q.view(B, H, W, C).permute(0, 3, 1, 2).contiguous()
-        x_out = q * self.h(ctx_all.view(B, H, W, C).permute(0, 3, 1, 2).contiguous())
+        x_out = q * self.h(ctx_all.view(B, H, W,
+                           C).permute(0, 3, 1, 2).contiguous())
 
         x_out = x_out.permute(0, 2, 3, 1).view(B, -1, C).contiguous()
         x_out = self.proj(x_out)  # [B, L, C]
@@ -339,6 +339,7 @@ class BasicLayer(nn.Module):
             Ho, Wo = H, W
 
         return x_out, Ho, Wo
+
 
 class PatchEmbed(nn.Module):
     """ Image to Patch Embedding
@@ -359,16 +360,17 @@ class PatchEmbed(nn.Module):
 
         if self.up_sampling == 'conv':
             self.proj = nn.Sequential(nn.ConvTranspose2d(self.in_chans, self.embed_dim,
-                                                         kernel_size=(patch_size, patch_size),
+                                                         kernel_size=(
+                                                             patch_size, patch_size),
                                                          stride=(patch_size, patch_size), padding=(0, 0), bias=True))
-                                      #nn.ReLU(inplace=True))
+            # nn.ReLU(inplace=True))
 
         elif self.up_sampling in ('bilinear', 'nearest', 'bicubic'):
 
             self.proj = nn.Sequential(nn.Upsample(scale_factor=patch_size, mode=self.up_sampling),
                                       nn.Conv2d(self.in_chans,  self.embed_dim, kernel_size=(1, 1),
                                                 stride=(1, 1), padding=(0, 0), bias=True))
-                                      #nn.ReLU(inplace=True))
+            # nn.ReLU(inplace=True))
         else:
             raise ValueError('%s is not a recognized down_sampling type.\
              Supported are conv, bilinear, nearest or bicubic' % self.up_sampling)
@@ -378,21 +380,22 @@ class PatchEmbed(nn.Module):
         H, W = x.shape[2:]
         return x, H, W
 
+
 @MODELS.register_module()
 class FocalNetDecoder(BaseDecodeHead):
     """ 2D Focal Modulation Networks (FocalNets) Decoder """
 
-    def __init__(self, 
+    def __init__(self,
                  pretrain_img_size=1024,
                  patch_size=4,
                  depths=[2, 2, 6, 2],
                  mlp_ratio=4.,
                  drop_rate=0.,
                  drop_path_rate=0.2,
-                 focal_levels=[2,2,2,2], 
-                 focal_windows=[9,9,9,9],
-                 use_layerscale=False, 
-                 use_checkpoint=False, 
+                 focal_levels=[2, 2, 2, 2],
+                 focal_windows=[9, 9, 9, 9],
+                 use_layerscale=False,
+                 use_checkpoint=False,
                  layerscale_value=1/torch.sqrt(torch.tensor(2)),
                  use_postln=False,
                  use_postln_in_modulation=False,
@@ -402,7 +405,6 @@ class FocalNetDecoder(BaseDecodeHead):
                  norm_layer=nn.LayerNorm,
                  **kwargs
                  ):
-
         """
         Parameters
         ----------
@@ -438,22 +440,27 @@ class FocalNetDecoder(BaseDecodeHead):
                 self.decoder_out_channels.append(encoder_channels[i+1]//2)
             else:
                 self.decoder_out_channels.append(encoder_channels[i+1])
-            self.in_channels.append(encoder_channels[i] + self.decoder_out_channels[(self.n_layers - 2) - i])
+            self.in_channels.append(
+                encoder_channels[i] + self.decoder_out_channels[(self.n_layers - 2) - i])
         self.decoder_out_channels.append(encoder_channels[0]*3)
 
-        super().__init__(in_channels=self.in_channels, 
-                         channels=self.decoder_out_channels[-1], 
+        super().__init__(in_channels=self.in_channels,
+                         channels=self.decoder_out_channels[-1],
                          **kwargs)
 
-        patches_resolution = [pretrain_img_size // self.patch_size, pretrain_img_size // self.patch_size]
+        patches_resolution = [pretrain_img_size //
+                              self.patch_size, pretrain_img_size // self.patch_size]
         self.patches_resolution = patches_resolution
 
         self.input_resolution = []
         for i in reversed(range(self.n_layers)):
-            self.input_resolution.append((patches_resolution[0] // (2 ** i), patches_resolution[1] // (2 ** i)))
+            self.input_resolution.append(
+                (patches_resolution[0] // (2 ** i), patches_resolution[1] // (2 ** i)))
 
         # stochastic depth
-        dpr = [x.item() for x in reversed(torch.linspace(0, self.drop_path_rate, sum(self.depths)))]  # stochastic depth decay rule
+        dpr = [x.item() for x in reversed(torch.linspace(
+            # stochastic depth decay rule
+            0, self.drop_path_rate, sum(self.depths)))]
 
         # build layers
         self.layers = nn.ModuleList()
@@ -465,8 +472,10 @@ class FocalNetDecoder(BaseDecodeHead):
                                depth=self.depths[i_layer],
                                mlp_ratio=self.mlp_ratio,
                                drop=self.drop_rate,
-                               drop_path=dpr[sum(self.depths[:i_layer]):sum(self.depths[:i_layer + 1])],
-                               upsample=PatchEmbed if (i_layer != (self.n_layers - 1)) else None,
+                               drop_path=dpr[sum(self.depths[:i_layer]):sum(
+                                   self.depths[:i_layer + 1])],
+                               upsample=PatchEmbed if (
+                                   i_layer != (self.n_layers - 1)) else None,
                                upsampling_type=self.up_sampling,
                                focal_level=self.focal_levels[i_layer],
                                focal_window=self.focal_windows[i_layer],
@@ -479,12 +488,11 @@ class FocalNetDecoder(BaseDecodeHead):
                                )
 
             self.layers.append(layer)
-        
+
         for i_layer in range(self.n_layers):
             layer = norm_layer(self.decoder_out_channels[i_layer])
             layer_name = f'norm{i_layer}'
             self.add_module(layer_name, layer)
-
 
         self._init_weights()
 
@@ -503,7 +511,6 @@ class FocalNetDecoder(BaseDecodeHead):
 
         self.apply(init_func)
 
-
     @torch.jit.ignore
     def no_weight_decay(self):
         return {''}
@@ -511,7 +518,6 @@ class FocalNetDecoder(BaseDecodeHead):
     @torch.jit.ignore
     def no_weight_decay_keywords(self):
         return {''}
-
 
     def _forward_feature(self, inputs):
         """
@@ -525,7 +531,8 @@ class FocalNetDecoder(BaseDecodeHead):
             if i != 0:
 
                 if x_i.size()[-2:] != x_out.size()[-2:]:
-                    x_out = F.interpolate(x_out, size=x_i.size()[-2:], mode='bilinear', align_corners=False)
+                    x_out = F.interpolate(x_out, size=x_i.size(
+                    )[-2:], mode='bilinear', align_corners=False)
 
                 x_i = torch.cat((x_i, x_out), dim=1)
 
@@ -537,16 +544,15 @@ class FocalNetDecoder(BaseDecodeHead):
             x_out = x_out.permute(0, 2, 3, 1).contiguous()
             x_out = getattr(self, f'norm{i}')(x_out)
             x_out = x_out.permute(0, 3, 1, 2).contiguous()
-    
+
         if self.patch_size != 1:
-            x_out = F.interpolate(x_out, scale_factor=self.patch_size, mode='bilinear', align_corners=False)
+            x_out = F.interpolate(
+                x_out, scale_factor=self.patch_size, mode='bilinear', align_corners=False)
 
         return x_out
 
     def forward(self, inputs):
         output = self._forward_feature(inputs)
-        output = self.cls_seg(output)        
+        output = self.cls_seg(output)
 
         return output
-
-
