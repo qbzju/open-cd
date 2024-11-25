@@ -81,11 +81,20 @@ class ChannelAttention(nn.Module):
 
 @MODELS.register_module()
 class FocalFusion(nn.Module):
-    def __init__(self, in_channels):
+    def __init__(self, in_channels,
+                 focal_factor=2,
+                 focal_level=[2,2,2,2],
+                 focal_window=[7,7,7,7],
+                 drop=0.):
         super().__init__()
 
         self.cross_focals = nn.ModuleList([
-            CrossFocalModulation(c) for c in in_channels
+            CrossFocalModulation(c, 
+                                 focal_factor, 
+                                 focal_level[i], 
+                                 focal_window[i], 
+                                 drop) 
+            for i, c in enumerate(in_channels)
         ])
         # attention for each scale
         self.channel_attentions = nn.ModuleList([

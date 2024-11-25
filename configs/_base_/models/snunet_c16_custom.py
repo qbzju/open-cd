@@ -20,13 +20,13 @@ model = dict(
         in_chans=3,
         embed_dim=embed_dim,
         patch_size=patch_size,
-        depths=[2, 2, 6, 2],
+        depths=[2, 2, 18, 2],
         mlp_ratio=4.,
         drop_rate=0.,
         drop_path_rate=0.2,
         patch_norm=True,
         use_checkpoint=False,    
-        focal_windows=[3, 3, 3, 3],
+        focal_windows=[9, 9, 9, 9],
         focal_levels=[2, 2, 2, 2],
         out_indices=(0, 1, 2, 3),
         normalize_modulator=False,
@@ -46,6 +46,12 @@ model = dict(
         align_corners=False,
         loss_decode=dict(
             type='mmseg.CrossEntropyLoss', use_sigmoid=False, loss_weight=1.0)),
+    neck=dict(type='FocalFusion', 
+              in_channels=[embed_dim, embed_dim*2, embed_dim*4, embed_dim*8],
+              focal_factor=2,
+              focal_level=[2, 2, 2, 2],
+              focal_window=[9, 9, 9, 9],
+              drop=0.0),
     # decode_head=dict(
     #     type='FocalNetDecoder',
     #     input_transform='multiple_select',
@@ -60,8 +66,6 @@ model = dict(
     #     loss_decode=dict(
     #         type='mmseg.CrossEntropyLoss', use_sigmoid=False, loss_weight=1.0, avg_non_ignore=True,),
     #     ),
-    neck=dict(type='FocalFusion', 
-              in_channels=[embed_dim, embed_dim*2, embed_dim*4, embed_dim*8]),
     # auxiliary_head=dict(
     #     type='mmseg.FCNHead',
     #     in_channels=embed_dim * 4,
