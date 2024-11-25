@@ -9,7 +9,7 @@ data_preprocessor = dict(
     pad_val=0,
     seg_pad_val=255,
     test_cfg=dict(size_divisor=32))
-embed_dim = 96
+embed_dim = 128
 patch_size = 4
 model = dict(
     type='SiamEncoderDecoder',
@@ -27,7 +27,7 @@ model = dict(
         patch_norm=True,
         use_checkpoint=False,    
         focal_windows=[9, 9, 9, 9],
-        focal_levels=[2, 2, 2, 2],
+        focal_levels=[3, 3, 3, 3],
         out_indices=(0, 1, 2, 3),
         normalize_modulator=False,
         use_postln=False,
@@ -49,7 +49,7 @@ model = dict(
     neck=dict(type='FocalFusion', 
               in_channels=[embed_dim, embed_dim*2, embed_dim*4, embed_dim*8],
               focal_factor=2,
-              focal_level=[2, 2, 2, 2],
+              focal_level=[3, 3, 3, 3],
               focal_window=[9, 9, 9, 9],
               drop=0.0),
     # decode_head=dict(
