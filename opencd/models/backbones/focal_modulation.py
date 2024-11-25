@@ -62,17 +62,18 @@ class Aggregator(nn.Module):
         self.kernel = kernel
         # multi-scale convolution layers
         self.layers = nn.ModuleList()
-        if kernel is FocalKernel:
+        if kernel is FocalModulationBlock:
+            for k in range(depth):
+                drop_path = kwargs.get('drop_path', 0.0)
+                kwargs['drop_path'] = drop_path[k] if isinstance(drop_path, list) else drop_path
+                self.layers.append(kernel(dim, **kwargs))
+        else:
             focal_factor = kwargs.get('focal_factor', 2)
             focal_window = kwargs.get('focal_window', 7)
             for k in range(depth):
                 kernel_size = focal_factor * k + focal_window
                 self.layers.append(kernel(dim, kernel_size))
-        elif kernel is FocalModulationBlock:
-            for k in range(depth):
-                drop_path = kwargs.get('drop_path', 0.0)
-                kwargs['drop_path'] = drop_path[k] if isinstance(drop_path, list) else drop_path
-                self.layers.append(kernel(dim, **kwargs))
+
         self.act = nn.GELU()
         self.h = nn.Conv2d(dim, dim, 1, 1, 0, groups=1, bias=True)
         
@@ -95,9 +96,9 @@ class Aggregator(nn.Module):
         ctx_global = self.act(ctx_all.mean(dim=1, keepdim=True))
         ctx_all = (ctx_all + ctx_global * gates[:, :, self.depth:]) / (self.depth + 1)
 
-        ctx_all = ctx_all.view(B, H, W, C).permute(0, 3, 1, 2).contiguous() # [B, C, H, W]
+        ctx_all = ctx_all.view(B, H, W, -1).permute(0, 3, 1, 2).contiguous() # [B, C, H, W]
         ctx_all = self.h(ctx_all)
-        return ctx_all.view(B, C, L).permute(0, 2, 1).contiguous() # [B, L, C]
+        return ctx_all.view(B, -1, L).permute(0, 2, 1).contiguous() # [B, L, C]
         
     
 
