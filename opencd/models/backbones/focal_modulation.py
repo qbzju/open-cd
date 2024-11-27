@@ -4,10 +4,10 @@
 # Licensed under The MIT License [see LICENSE for details]
 # Written by Jianwei Yang
 # --------------------------------------------------------
+from re import S
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-import torch.utils.checkpoint as checkpoint
 from timm.models.layers import DropPath, to_2tuple, trunc_normal_
 from opencd.registry import MODELS
 
@@ -55,11 +55,13 @@ class Aggregator(nn.Module):
                  dim, 
                  depth, 
                  kernel=FocalKernel,
+                 normalize_context=False,
                  **kwargs):
         super().__init__()
         self.dim = dim
         self.depth = depth
         self.kernel = kernel
+        self.normalize_context = normalize_context
         # multi-scale convolution layers
         self.layers = nn.ModuleList()
         if kernel is FocalModulationBlock:
@@ -94,7 +96,10 @@ class Aggregator(nn.Module):
             ctx_all = ctx_all + ctx * gates[:, :, i:i+1]
 
         ctx_global = self.act(ctx_all.mean(dim=1, keepdim=True))
-        ctx_all = (ctx_all + ctx_global * gates[:, :, self.depth:]) / (self.depth + 1)
+        ctx_all = ctx_all + ctx_global * gates[:, :, self.depth:]
+
+        if self.normalize_context:
+            ctx_all = ctx_all / (self.depth + 1)
 
         ctx_all = ctx_all.view(B, H, W, -1).permute(0, 3, 1, 2).contiguous() # [B, C, H, W]
         ctx_all = self.h(ctx_all)
@@ -175,8 +180,9 @@ class FocalModulation(nn.Module):
         use_postln (bool, default=True): Whether use post-modulation layernorm
     """
 
-    def __init__(self, dim, proj_drop=0., focal_level=2, focal_window=7, focal_factor=2,
-                 use_postln=False, normalize_modulator=False, use_postln_in_modulation=False):
+    def __init__(self, dim, proj_drop=0., focal_level=2, 
+                 focal_window=7, focal_factor=2,
+                 use_postln=False, normalize_context=True):
 
         super().__init__()
 
@@ -185,12 +191,16 @@ class FocalModulation(nn.Module):
         self.focal_level = focal_level
         self.focal_window = focal_window
         self.focal_factor = focal_factor
+        self.use_postln = use_postln
 
         self.modulator = Modulator(dim, focal_level)
         self.aggregator = Aggregator(dim, 
                                      focal_level, 
+                                     normalize_context=normalize_context,
                                      focal_window=focal_window, 
                                      focal_factor=focal_factor)
+        if self.use_postln:
+            self.norm = nn.LayerNorm(dim)
         
         self.proj = nn.Linear(dim, dim)
         self.proj_drop = nn.Dropout(proj_drop)
@@ -207,8 +217,8 @@ class FocalModulation(nn.Module):
         ctx_all = self.aggregator(ctx, gates, H, W)
         x_out = q * ctx_all
 
-        # TODO: add normalization layer
-        
+        if self.use_postln:
+            x_out = self.norm(x_out)
         x_out = self.proj(x_out)
         x_out = self.proj_drop(x_out)
 
@@ -231,8 +241,8 @@ class FocalModulationBlock(nn.Module):
 
     def __init__(self, dim, mlp_ratio=4., drop=0., drop_path=0.,
                  act_layer=nn.GELU, norm_layer=nn.LayerNorm,
-                 focal_level=2, focal_window=9, use_layerscale=False, layerscale_value=1e-4, normalize_modulator=False,
-                 use_postln=False, use_postln_in_modulation=False):
+                 focal_level=2, focal_window=9, use_layerscale=False, layerscale_value=1e-4, normalize_context=False,
+                 use_postln=False):
         super().__init__()
         self.dim = dim
         self.mlp_ratio = mlp_ratio
@@ -243,8 +253,8 @@ class FocalModulationBlock(nn.Module):
 
         self.norm1 = norm_layer(dim)
         self.modulation = FocalModulation(
-            dim, focal_window=self.focal_window, focal_level=self.focal_level, proj_drop=drop, normalize_modulator=normalize_modulator,
-            use_postln=use_postln, use_postln_in_modulation=use_postln_in_modulation
+            dim, focal_window=self.focal_window, focal_level=self.focal_level, proj_drop=drop, normalize_context=normalize_context,
+            use_postln=use_postln
         )
 
         self.drop_path = DropPath(
@@ -314,15 +324,13 @@ class BasicLayer(nn.Module):
                  use_conv_embed=False,
                  use_layerscale=False,
                  use_checkpoint=False,
-                 use_postln=False,
-                 normalize_modulator=False,
-                 use_postln_in_modulation=False,
-                 normalize_layer=False
-                 ):
+                 use_postln=False, # use postln in BaseLayer
+                 normalize_context=False,
+                ):
         super().__init__()
         self.depth = depth
         self.use_checkpoint = use_checkpoint
-
+        self.use_postln = use_postln
         self.proj = nn.Linear(dim, dim)
         self.proj_drop = nn.Dropout(drop)
 
@@ -337,8 +345,8 @@ class BasicLayer(nn.Module):
                                      use_layerscale=use_layerscale,
                                      norm_layer=norm_layer,
                                      use_postln=use_postln,
-                                     normalize_modulator=normalize_modulator,
-                                     use_postln_in_modulation=use_postln_in_modulation)
+                                     normalize_context=normalize_context,
+                                     mlp_ratio=mlp_ratio)
 
         # patch merging layer
         if downsample is not None:
@@ -352,6 +360,9 @@ class BasicLayer(nn.Module):
 
         else:
             self.downsample = None
+        
+        if self.use_postln:
+            self.norm = norm_layer(dim)
 
     def forward(self, x, H, W):
         """ Forward function.
@@ -364,7 +375,10 @@ class BasicLayer(nn.Module):
         ctx_all = self.aggregator(ctx, gates, H, W)
 
         x_out = q * ctx_all
-        # TODO: add ln
+
+        if self.use_postln:
+            x_out = self.norm(x_out)
+
         x_out = self.proj(x_out)
         x_out = self.proj_drop(x_out)
 
@@ -391,7 +405,8 @@ class PatchEmbed(nn.Module):
         is_stem (bool): Is the stem block or not. 
     """
 
-    def __init__(self, patch_size=4, in_chans=3, embed_dim=96, norm_layer=None, use_conv_embed=False, is_stem=False):
+    def __init__(self, patch_size=4, in_chans=3, embed_dim=96, 
+                 norm_layer=None, use_conv_embed=False, is_stem=False):
         super().__init__()
         patch_size = to_2tuple(patch_size)
         self.patch_size = patch_size
@@ -482,9 +497,8 @@ class FocalNet(nn.Module):
                  use_conv_embed=False,
                  use_layerscale=False,
                  use_postln=False,
-                 normalize_modulator=False,
+                 normalize_context=False,
                  use_checkpoint=False,
-                 use_postln_in_modulation=False,
                  use_downsample=True,
                  ):
         super().__init__()
@@ -530,8 +544,7 @@ class FocalNet(nn.Module):
                     use_layerscale=use_layerscale,
                     use_checkpoint=use_checkpoint,
                     use_postln=use_postln,
-                    normalize_modulator=normalize_modulator,
-                    use_postln_in_modulation=use_postln_in_modulation
+                    normalize_context=normalize_context,
                 )
                 self.layers.append(layer)
         else:
@@ -550,8 +563,7 @@ class FocalNet(nn.Module):
                     use_layerscale=use_layerscale,
                     use_checkpoint=use_checkpoint,
                     use_postln=use_postln,
-                    normalize_modulator=normalize_modulator,
-                    use_postln_in_modulation=use_postln_in_modulation
+                    normalize_context=normalize_context,
                 )
                 self.layers.append(layer)
 

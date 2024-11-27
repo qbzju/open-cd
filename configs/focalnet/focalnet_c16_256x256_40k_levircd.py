@@ -4,14 +4,16 @@ _base_ = [
 
 data_root = '../datasets/LEVIR-CD'
 
-embed_dim = 96
+embed_dim = 32
+patch_size = 1
 
 model = dict(
     type='SiamEncoderDecoder',
     backbone=dict(
         type='FocalNet',
+        patch_size=patch_size,
         embed_dim=embed_dim,
-        depths=[1, 1],
+        depths=[2, 2],
         focal_windows=[3, 3],
         focal_levels=[2, 2],
         out_indices=(0, 1),
@@ -28,13 +30,14 @@ model = dict(
         dropout_ratio=0.1,
         num_classes=2,
         align_corners=False,
-        neck=dict(type='FocalFusion',
-                  #   in_channels=[embed_dim, embed_dim*2, embed_dim*4, embed_dim*8],
-                  in_channels=[embed_dim, embed_dim*2],
-                  focal_factor=2,
-                  focal_window=[3, 3],
-                  focal_level=[2, 2],
-                  drop=0.0),)
+    ),
+    neck=dict(type='FocalFusion',
+              #   in_channels=[embed_dim, embed_dim*2, embed_dim*4, embed_dim*8],
+              in_channels=[embed_dim, embed_dim*2],
+              focal_factor=2,
+              focal_window=[3, 3],
+              focal_level=[2, 2],
+              drop=0.0),
 )
 
 
