@@ -9,10 +9,10 @@ data_preprocessor = dict(
     pad_val=0,
     seg_pad_val=255,
     test_cfg=dict(size_divisor=32))
-embed_dim = 64
+embed_dim = 96
 patch_size = 4
 model = dict(
-    type='SiamEncoderDecoder',
+    type='DIEncoderDecoder',
     data_preprocessor=data_preprocessor,
     pretrained=None,
     backbone=dict(

@@ -11,7 +11,7 @@ model = dict(
     backbone=dict(
         type='FocalNet',
         embed_dim=embed_dim,
-        depths=[1, 1],
+        depths=[2, 2],
         focal_windows=[3, 3],
         focal_levels=[2, 2],
         out_indices=(0, 1),
@@ -27,18 +27,18 @@ model = dict(
         channels=64,
         dropout_ratio=0.1,
         num_classes=2,
-        align_corners=False,
-        neck=dict(type='FocalFusion',
-                  #   in_channels=[embed_dim, embed_dim*2, embed_dim*4, embed_dim*8],
-                  in_channels=[embed_dim, embed_dim*2],
-                  focal_factor=2,
-                  focal_window=[3, 3],
-                  focal_level=[2, 2],
-                  drop=0.0),)
+        align_corners=False),
+    neck=dict(type='FocalFusion',
+              in_channels=[v * 2 for v in [embed_dim, embed_dim*2]],
+              focal_factor=2,
+              focal_window=[3, 3],
+              focal_level=[2, 2],
+              drop=0.0),
 )
 
 
 train_dataloader = dict(
+    batch_size=16,
     dataset=dict(
         data_root=data_root
     )
@@ -57,7 +57,7 @@ test_dataloader = dict(
 )
 
 # AdamW optimizer, no weight decay for position embedding & layer norm in backbone
-optimizer = dict(_delete_=True, type='AdamW', lr=0.0001, betas=(0.9, 0.999), weight_decay=0.01,
+optimizer = dict(_delete_=True, type='AdamW', lr=0.00003, betas=(0.9, 0.999), weight_decay=0.01,
                  eps=1e-8,
                  )
 

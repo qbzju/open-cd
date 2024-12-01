@@ -4,8 +4,8 @@ _base_ = [
 
 data_root = '../datasets/LEVIR-CD'
 
-embed_dim = 32
-patch_size = 1
+embed_dim = 16
+patch_size = 4
 
 model = dict(
     type='SiamEncoderDecoder',
@@ -32,8 +32,7 @@ model = dict(
         align_corners=False,
     ),
     neck=dict(type='FocalFusion',
-              #   in_channels=[embed_dim, embed_dim*2, embed_dim*4, embed_dim*8],
-              in_channels=[embed_dim, embed_dim*2],
+              in_channels=[v * 2 for v in [embed_dim, embed_dim*2]],
               focal_factor=2,
               focal_window=[3, 3],
               focal_level=[2, 2],
@@ -42,6 +41,7 @@ model = dict(
 
 
 train_dataloader = dict(
+    batch_size=32,
     dataset=dict(
         data_root=data_root
     )
@@ -60,7 +60,7 @@ test_dataloader = dict(
 )
 
 # AdamW optimizer, no weight decay for position embedding & layer norm in backbone
-optimizer = dict(_delete_=True, type='AdamW', lr=0.0001, betas=(0.9, 0.999), weight_decay=0.01,
+optimizer = dict(_delete_=True, type='AdamW', lr=0.00003, betas=(0.9, 0.999), weight_decay=0.01,
                  eps=1e-8,
                  )
 

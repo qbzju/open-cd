@@ -4,27 +4,60 @@ from opencd.registry import MODELS
 from ..backbones.focal_modulation import FocalModulation, Aggregator
 from einops.layers.torch import Rearrange
 
+
 class CrossFocalKernel(nn.Module):
     def __init__(self, dim, kernel_size, use_gelu=True):
         super().__init__()
-        self.conv = nn.Sequential(
-            Rearrange('b (g d) h w -> b (d g) h w', g=2), 
-            nn.Conv2d(2 * dim, dim, kernel_size=kernel_size, 
-                              stride=1, groups=2, padding=kernel_size//2, 
-                              bias=False)
+        # dim = 2 * c
+        self.group_conv = nn.Sequential(
+            Rearrange('b (g d) h w -> b (d g) h w', g=2),
+            nn.Conv2d(dim, dim // 2, kernel_size=kernel_size,
+                      stride=1, groups=dim // 2, padding=kernel_size//2,
+                      bias=False),
         )
+
         self.act = nn.GELU() if use_gelu else nn.Identity()
         self.H = None
         self.W = None
 
     def forward(self, x):
-        B, L, C = x.shape # C = 2 * dim
+        B, L, C = x.shape  # C = 2 * c
         assert L == self.H * self.W, "input feature has wrong size"
 
+        x_out = x.view(B, self.H, self.W, C).permute(
+            0, 3, 1, 2).contiguous()  # [B, 2*c, H, W]
+        x_out = self.act(self.group_conv(x_out))  # [B, C, H, W]
+        return x_out.permute(0, 2, 3, 1).view(B, L, -1).contiguous()
 
-        x_out = x.view(x.shape[0], self.H, self.W, x.shape[2]).permute(0, 3, 1, 2).contiguous() # [B, 2*C, H, W]
-        x_out = self.act(self.conv(x_out))
-        return x_out.view(B, C // 2, L).permute(0, 2, 1).contiguous() # [B, L, C]
+
+class CrossAggregator(Aggregator):
+    def __init__(self, dim, focal_level, kernel=CrossFocalKernel):
+        super().__init__(dim, focal_level, kernel)
+        self.h = nn.Conv2d(dim // 2, dim // 2, 1, 1, 0, groups=1, bias=True)
+
+    def forward(self, context, gates, H=None, W=None):
+
+        B, L, C = context.shape
+        assert L == H * W, "input feature has wrong size"
+        ctx_all = 0
+        ctx = context
+        for i, layer in enumerate(self.layers):
+            layer.H, layer.W = H, W
+            ctx_i = layer(ctx)
+            ctx_all = ctx_all + ctx_i * gates[:, :, i:i+1]
+
+        ctx_global = self.act(ctx_all.mean(dim=1, keepdim=True))
+        ctx_all = ctx_all + ctx_global * gates[:, :, self.depth:]
+
+        if self.normalize_context:
+            ctx_all = ctx_all / (self.depth + 1)
+
+        ctx_all = ctx_all.view(B, H, W, -1).permute(0, 3,
+                                                    # [B, C, H, W]
+                                                    1, 2).contiguous()
+        ctx_all = self.h(ctx_all)
+        # [B, L, C]
+        return ctx_all.view(B, -1, L).permute(0, 2, 1).contiguous()
 
 
 class CrossFocalModulation(FocalModulation):
@@ -35,16 +68,16 @@ class CrossFocalModulation(FocalModulation):
                  focal_level=2,
                  focal_window=7,
                  drop=0.):
-        super().__init__(dim,
+        super().__init__(dim // 2,
                          focal_factor=focal_factor,
                          focal_level=focal_level,
                          focal_window=focal_window,
-                        )
-        self.cross_gate_sm = nn.Softmax(dim=2)
-        self.aggregator = Aggregator(dim, focal_level,kernel=CrossFocalKernel)
-        self.proj = nn.Linear(dim, dim) 
+                         )
+        self.aggregator = CrossAggregator(
+            dim, focal_level, kernel=CrossFocalKernel)
+        self.proj = nn.Linear(dim // 2, dim // 2)
         self.proj_drop = nn.Dropout(drop)
-        
+
     def forward(self, xa, xb):
         B, C, H, W = xa.shape
         xa = xa.view(B, C, H*W).permute(0, 2, 1).contiguous()
@@ -52,14 +85,14 @@ class CrossFocalModulation(FocalModulation):
 
         _, ctx_a, gates_a = self.modulator(xa)
         q_b, ctx_b, gates_b = self.modulator(xb)
-        gates = self.cross_gate_sm(gates_a + gates_b)
-        ctx_all = self.aggregator(torch.cat([ctx_a, ctx_b], dim=2), gates, H, W)
-        
-        x_out = q_b * self.proj_drop(self.proj(ctx_all))
+        gates = gates_a + gates_b
+        ctx_all = self.aggregator(
+            torch.cat([ctx_a, ctx_b], dim=2), gates, H, W)  # B, L, 2c
 
-        x_out = x_out.view(B, H, W, C).permute(0, 3, 1, 2).contiguous()
+        ctx_all *= q_b
+        x_out = self.proj_drop(self.proj(ctx_all))
 
-        return x_out
+        return x_out.view(B, H, W, C).permute(0, 3, 1, 2).contiguous()
 
 
 class ChannelAttention(nn.Module):
@@ -83,22 +116,22 @@ class ChannelAttention(nn.Module):
 class FocalFusion(nn.Module):
     def __init__(self, in_channels,
                  focal_factor=2,
-                 focal_level=[2,2,2,2],
-                 focal_window=[7,7,7,7],
+                 focal_level=[2, 2, 2, 2],
+                 focal_window=[7, 7, 7, 7],
                  drop=0.):
         super().__init__()
 
         self.cross_focals = nn.ModuleList([
-            CrossFocalModulation(c, 
-                                 focal_factor, 
-                                 focal_level[i], 
-                                 focal_window[i], 
-                                 drop) 
+            CrossFocalModulation(c,
+                                 focal_factor,
+                                 focal_level[i],
+                                 focal_window[i],
+                                 drop)
             for i, c in enumerate(in_channels)
         ])
         # attention for each scale
         self.channel_attentions = nn.ModuleList([
-            ChannelAttention(c) for c in in_channels
+            ChannelAttention(c // 2) for c in in_channels
         ])
 
         self.gap_sigmoid = nn.Sequential(

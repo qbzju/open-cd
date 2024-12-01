@@ -10,50 +10,55 @@ import torch.nn as nn
 import torch.nn.functional as F
 from timm.models.layers import DropPath, to_2tuple, trunc_normal_
 from opencd.registry import MODELS
+from einops.layers.torch import Rearrange
+
 
 class FocalKernel(nn.Module):
     """Focal Kernel for extracting features at different scales
-    
+
     Args:
         dim (int): Number of input channels
         kernel_size (int): Size of the convolution kernel
         use_gelu (bool, default=True): Whether to use GELU activation
     """
+
     def __init__(self, dim, kernel_size, use_gelu=True):
         super().__init__()
-        self.conv = nn.Conv2d(
-            dim, dim,
-            kernel_size=kernel_size,
-            stride=1,
-            groups=dim,  
-            padding=kernel_size//2,
-            bias=False
+
+        self.conv = nn.Sequential(
+            Rearrange('b (g d) h w -> b (d g) h w', g=2),
+            nn.Conv2d(2 * dim, 2 * dim, kernel_size=kernel_size,
+                      stride=1, groups=dim, padding=kernel_size//2,
+                      bias=False)
         )
-        
+
         self.act = nn.GELU() if use_gelu else nn.Identity()
         self.H = None
         self.W = None
-        
+
     def forward(self, x):
         '''x : [B, L, C]'''
-        B, L, C = x.shape
+        B, L, C = x.shape  # C = 2 * dim
         assert L == self.H * self.W, "input feature has wrong size"
-        x_out = x.view(x.shape[0], self.H, self.W, x.shape[2]).permute(0, 3, 1, 2).contiguous() # [B, C, H, W]
-        x_out = self.act(self.conv(x_out))
-        return x_out.view(B, C, L).permute(0, 2, 1).contiguous() # [B, L, C]
+        x_out = x.view(x.shape[0], self.H, self.W, x.shape[2]).permute(
+            0, 3, 1, 2).contiguous()  # [B, C, H, W]
+        x_out = self.act(self.conv(x_out))  # [B, L, C]
+        return x_out.view(B, C // 2, L).permute(0, 2, 1).contiguous()
+
 
 class Aggregator(nn.Module):
     """Aggregate context features at multiple focal levels and global context
-    
+
     Args:
         dim (int): Number of input channels
         depth (int): Number of aggregation levels
         kernel (nn.Module): Kernel module
         kwargs: Additional keyword arguments
     """
-    def __init__(self, 
-                 dim, 
-                 depth, 
+
+    def __init__(self,
+                 dim,
+                 depth,
                  kernel=FocalKernel,
                  normalize_context=False,
                  **kwargs):
@@ -67,14 +72,9 @@ class Aggregator(nn.Module):
         if kernel is FocalModulationBlock:
             for k in range(depth):
                 drop_path = kwargs.get('drop_path', 0.0)
-                kwargs['drop_path'] = drop_path[k] if isinstance(drop_path, list) else drop_path
+                kwargs['drop_path'] = drop_path[k] if isinstance(
+                    drop_path, list) else drop_path
                 self.layers.append(kernel(dim, **kwargs))
-        elif kernel is FocalKernel:
-            focal_factor = kwargs.get('focal_factor', 2)
-            focal_window = kwargs.get('focal_window', 7)
-            for k in range(depth):
-                kernel_size = focal_factor * k + focal_window
-                self.layers.append(kernel(dim, kernel_size))
         else:
             focal_factor = kwargs.get('focal_factor', 2)
             focal_window = kwargs.get('focal_window', 7)
@@ -84,7 +84,7 @@ class Aggregator(nn.Module):
 
         self.act = nn.GELU()
         self.h = nn.Conv2d(dim, dim, 1, 1, 0, groups=1, bias=True)
-        
+
     def forward(self, context, gates, H=None, W=None):
         """
         Args:
@@ -96,7 +96,6 @@ class Aggregator(nn.Module):
         B, L, C = context.shape
         assert L == H * W, "input feature has wrong size"
         ctx_all = 0
-        ctx = context
         for i, layer in enumerate(self.layers):
             layer.H, layer.W = H, W
             ctx = layer(ctx)
@@ -108,11 +107,13 @@ class Aggregator(nn.Module):
         if self.normalize_context:
             ctx_all = ctx_all / (self.depth + 1)
 
-        ctx_all = ctx_all.view(B, H, W, -1).permute(0, 3, 1, 2).contiguous() # [B, C, H, W]
+        ctx_all = ctx_all.view(B, H, W, -1).permute(0, 3,
+                                                    # [B, C, H, W]
+                                                    1, 2).contiguous()
         ctx_all = self.h(ctx_all)
-        return ctx_all.view(B, -1, L).permute(0, 2, 1).contiguous() # [B, L, C]
-        
-    
+        # [B, L, C]
+        return ctx_all.view(B, -1, L).permute(0, 2, 1).contiguous()
+
 
 class Modulator(nn.Module):
     """Modulator for generating modulated features
@@ -126,12 +127,12 @@ class Modulator(nn.Module):
         super().__init__()
         self.dim = dim
         self.focal_level = focal_level
-
+        # TODO: use fA for proj xA?
         self.f = nn.Linear(dim, 2*dim+(focal_level+1))
         # TODO: replace softmax with other activation function
         self.gate_sm = nn.Softmax(dim=2)
 
-    def forward(self, x):
+    def forward(self, xA, xB):
         """
         Args:
             x: input features with shape (B, L, C)
@@ -141,18 +142,24 @@ class Modulator(nn.Module):
             context: context features
             gates: modulation gates for different focal levels
         """
-        x = self.f(x)  # [B, L, 2C+(focal_level+1)]
+        xA = self.f(xA)  # [B, L, 2C+(focal_level+1)]
+        xB = self.f(xB)  # [B, L, 2C+(focal_level+1)]
 
-        query, context, gates = torch.split(
-            x,
+        _, contextA, gatesA = torch.split(
+            xA,
+            (self.dim, self.dim, self.focal_level+1),
+            dim=2
+        )
+        qB, contextB, gatesB = torch.split(
+            xB,
             (self.dim, self.dim, self.focal_level+1),
             dim=2
         )
 
         # use softmax to normalize the gates
-        gates = self.gate_sm(gates)
+        gates = self.gate_sm(gatesA + gatesB)
 
-        return query, context, gates
+        return qB, torch.cat((contextA, contextB), dim=2), gates
 
 
 class Mlp(nn.Module):
@@ -175,6 +182,7 @@ class Mlp(nn.Module):
         x = self.drop(x)
         return x
 
+
 class FocalModulation(nn.Module):
     """ Focal Modulation
 
@@ -187,7 +195,7 @@ class FocalModulation(nn.Module):
         use_postln (bool, default=True): Whether use post-modulation layernorm
     """
 
-    def __init__(self, dim, proj_drop=0., focal_level=2, 
+    def __init__(self, dim, proj_drop=0., focal_level=2,
                  focal_window=7, focal_factor=2,
                  use_postln=False, normalize_context=True):
 
@@ -201,17 +209,16 @@ class FocalModulation(nn.Module):
         self.use_postln = use_postln
 
         self.modulator = Modulator(dim, focal_level)
-        self.aggregator = Aggregator(dim, 
-                                     focal_level, 
+        self.aggregator = Aggregator(dim,
+                                     focal_level,
                                      normalize_context=normalize_context,
-                                     focal_window=focal_window, 
+                                     focal_window=focal_window,
                                      focal_factor=focal_factor)
         if self.use_postln:
             self.norm = nn.LayerNorm(dim)
-        
+
         self.proj = nn.Linear(dim, dim)
         self.proj_drop = nn.Dropout(proj_drop)
-
 
     def forward(self, x, H=None, W=None):
         """ Forward function.
@@ -220,7 +227,7 @@ class FocalModulation(nn.Module):
             x: input features with shape of (B, L, C)
             x_out: output features with shape of (B, L, C)
         """
-        q, ctx, gates = self.modulator(x) 
+        q, ctx, gates = self.modulator(x)
         ctx_all = self.aggregator(ctx, gates, H, W)
         x_out = q * ctx_all
 
@@ -260,7 +267,8 @@ class FocalModulationBlock(nn.Module):
 
         self.norm1 = norm_layer(dim)
         self.modulation = FocalModulation(
-            dim, focal_window=self.focal_window, focal_level=self.focal_level, proj_drop=drop, normalize_context=normalize_context,
+            dim, focal_window=self.focal_window, focal_level=self.focal_level, 
+            proj_drop=drop, normalize_context=normalize_context,
             use_postln=use_postln
         )
 
@@ -331,9 +339,9 @@ class BasicLayer(nn.Module):
                  use_conv_embed=False,
                  use_layerscale=False,
                  use_checkpoint=False,
-                 use_postln=False, # use postln in BaseLayer
+                 use_postln=False,  # use postln in BaseLayer
                  normalize_context=False,
-                ):
+                 ):
         super().__init__()
         self.depth = depth
         self.use_checkpoint = use_checkpoint
@@ -343,7 +351,7 @@ class BasicLayer(nn.Module):
 
         # self.normalize_layer = normalize_layer
         self.modulator = Modulator(dim, depth)
-        self.aggregator = Aggregator(dim, depth, 
+        self.aggregator = Aggregator(dim, depth,
                                      FocalModulationBlock,
                                      drop=drop,
                                      drop_path=drop_path,
@@ -367,18 +375,18 @@ class BasicLayer(nn.Module):
 
         else:
             self.downsample = None
-        
+
         if self.use_postln:
             self.norm = norm_layer(dim)
 
-    def forward(self, x, H, W):
+    def forward(self, xA, xB, H, W):
         """ Forward function.
 
         Args:
             x: Input feature, tensor size (B, H*W, C).
             H, W: Spatial resolution of the input feature.
         """
-        q, ctx, gates = self.modulator(x)
+        q, ctx, gates = self.modulator(xA, xB)
         ctx_all = self.aggregator(ctx, gates, H, W)
 
         x_out = q * ctx_all
@@ -412,7 +420,7 @@ class PatchEmbed(nn.Module):
         is_stem (bool): Is the stem block or not. 
     """
 
-    def __init__(self, patch_size=4, in_chans=3, embed_dim=96, 
+    def __init__(self, patch_size=4, in_chans=3, embed_dim=96,
                  norm_layer=None, use_conv_embed=False, is_stem=False):
         super().__init__()
         patch_size = to_2tuple(patch_size)
@@ -541,7 +549,8 @@ class FocalNet(nn.Module):
                     depth=depths[i_layer],
                     mlp_ratio=mlp_ratio,
                     drop=drop_rate,
-                    drop_path=dpr[sum(depths[:i_layer]):sum(depths[:i_layer + 1])],
+                    drop_path=dpr[sum(depths[:i_layer])
+                                      :sum(depths[:i_layer + 1])],
                     norm_layer=norm_layer,
                     downsample=PatchEmbed if (
                         i_layer < self.num_layers - 1) else None,
@@ -561,7 +570,8 @@ class FocalNet(nn.Module):
                     depth=depths[i_layer],
                     mlp_ratio=mlp_ratio,
                     drop=drop_rate,
-                    drop_path=dpr[sum(depths[:i_layer]):sum(depths[:i_layer + 1])],
+                    drop_path=dpr[sum(depths[:i_layer])
+                                      :sum(depths[:i_layer + 1])],
                     norm_layer=norm_layer,
                     downsample=None,
                     focal_window=focal_windows[i_layer],
@@ -619,18 +629,22 @@ class FocalNet(nn.Module):
 
         self.apply(_init_weights)
 
-    def forward(self, x):
+    def forward(self, xA, xB):
         """Forward function."""
-        x = self.patch_embed(x)
-        Wh, Ww = x.size(2), x.size(3)
+        assert xA.shape == xB.shape, "xA and xB must have the same shape"
+        xA = self.patch_embed(xA)
+        xB = self.patch_embed(xB)
+        Wh, Ww = xA.size(2), xA.size(3)
 
-        x = x.flatten(2).transpose(1, 2)  # [B, H*W, C]
-        x = self.pos_drop(x)
+        xA = xA.flatten(2).transpose(1, 2)  # [B, H*W, C]
+        xB = xB.flatten(2).transpose(1, 2)  # [B, H*W, C]
+        xA = self.pos_drop(xA)
+        xB = self.pos_drop(xB)
 
         outs = []
         for i in range(self.num_layers):
             layer = self.layers[i]
-            x_out, H, W, x, Wh, Ww = layer(x, Wh, Ww)
+            x_out, H, W, xA, xB, Wh, Ww = layer(xA, xB, Wh, Ww)
             if i in self.out_indices:
                 norm_layer = getattr(self, f'norm{i}')
                 x_out = norm_layer(x_out)
