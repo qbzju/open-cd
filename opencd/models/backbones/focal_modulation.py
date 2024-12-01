@@ -341,7 +341,7 @@ class BasicLayer(nn.Module):
         self.proj = nn.Linear(dim, dim)
         self.proj_drop = nn.Dropout(drop)
 
-        # self.normalize_layer = normalize_layer
+        # self.normalize_layer = normalize_layers
         self.modulator = Modulator(dim, depth)
         self.aggregator = Aggregator(dim, depth, 
                                      FocalModulationBlock,
@@ -354,7 +354,7 @@ class BasicLayer(nn.Module):
                                      use_postln=use_postln,
                                      normalize_context=normalize_context,
                                      mlp_ratio=mlp_ratio)
-
+        # TODO : stochastic depth decay rule
         # patch merging layer
         if downsample is not None:
             self.downsample = downsample(

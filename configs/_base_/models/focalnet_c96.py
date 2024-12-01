@@ -17,15 +17,12 @@ model = dict(
     pretrained=None,
     backbone=dict(
         type='FocalNet',
-        in_chans=3,
         embed_dim=embed_dim,
         patch_size=patch_size,
-        depths=[1, 1],
         mlp_ratio=4.,
         drop_rate=0.,
         drop_path_rate=0.2,
         patch_norm=True,
-        use_checkpoint=False,
         focal_windows=[3, 3],
         focal_levels=[2, 2],
         out_indices=(0, 1),
@@ -45,11 +42,5 @@ model = dict(
         align_corners=False,
         loss_decode=dict(
             type='mmseg.CrossEntropyLoss', use_sigmoid=False, loss_weight=1.0)),
-    neck=dict(type='FocalFusion',
-              in_channels=[v * 2 for v in [embed_dim, embed_dim*2]],
-              focal_factor=2,
-              focal_window=[3, 3],
-              focal_level=[2, 2],
-              drop=0.0),
     train_cfg=dict(),
     test_cfg=dict(mode='whole'))
