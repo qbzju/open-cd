@@ -3,8 +3,8 @@ import torch.nn as nn
 import torch.nn.functional as F
 from timm.models.layers import DropPath, to_2tuple, trunc_normal_
 from opencd.registry import MODELS
-from einops.layers.torch import Rearrange
-from .focal_modulation import FocalNet, PatchEmbed, FocalModulationBlock
+from .focal_modulation import PatchEmbed, Mlp
+from ..necks.focal_fusion import CrossFocalModulation
 
 @MODELS.register_module()
 class StinyFocalNet(nn.Module):
@@ -25,7 +25,7 @@ class StinyFocalNet(nn.Module):
                  use_layerscale=False,
                  use_postln=False,
                  normalize_context=False,
-                 ):
+                ):
         super().__init__()
 
         self.embed_dim = embed_dim
@@ -47,42 +47,38 @@ class StinyFocalNet(nn.Module):
                                                 # stochastic depth decay rule
                                                 self.num_layers)]
 
-        # TODO: add linear gate
-
         # build layers
+        self.num_features = [int(embed_dim * 2 ** i) for i in range(self.num_layers)]
+
         self.layers = nn.ModuleList()
+        self.mlps = nn.ModuleList()
         for i_layer in range(self.num_layers):
-            layer = FocalModulationBlock(
-                dim=int(embed_dim * 2 ** i_layer),
-                mlp_ratio=mlp_ratio,
-                drop=drop_rate,
-                drop_path=dpr[i_layer],
-                norm_layer=norm_layer,
-                focal_window=focal_windows[i_layer],
-                focal_level=focal_levels[i_layer],
-                use_layerscale=use_layerscale,
-                use_postln=use_postln,
-                normalize_context=normalize_context,
-            )
+            # TODO: add drop_path implementation, mlp, norm_layer
+            layer = CrossFocalModulation(
+                    dim=2 * self.num_features[i_layer],
+                    focal_window=focal_windows[i_layer],
+                    focal_level=focal_levels[i_layer],
+                )
+            mlp = Mlp(in_features=self.num_features[i_layer],
+                    hidden_features=int(mlp_ratio * self.num_features[i_layer]),
+                    act_layer=nn.GELU,
+                    drop=drop_rate)
+            
             self.layers.append(layer)
-
-
-        num_features = [int(embed_dim * 2 ** i) for i in range(self.num_layers)]
-        self.num_features = num_features
-
+            self.mlps.append(mlp)
         # add a norm layer for each output
         for i_layer in out_indices:
-            layer = norm_layer(num_features[i_layer])
+            layer = norm_layer(self.num_features[i_layer])
             layer_name = f'norm{i_layer}'
             self.add_module(layer_name, layer)
 
-        self.downsamples = []
+        self.downsamples = nn.ModuleList()
         for i in range(self.num_layers):
             if (i < self.num_layers - 1):
                 self.downsamples.append(PatchEmbed(
                     patch_size=2,
-                    in_chans=num_features[i], 
-                    embed_dim=2 * num_features[i],
+                    in_chans=self.num_features[i], 
+                    embed_dim=2 * self.num_features[i],
                     use_conv_embed=use_conv_embed,
                     norm_layer=norm_layer,
                     is_stem=False
@@ -126,28 +122,30 @@ class StinyFocalNet(nn.Module):
     def forward(self, xA, xB):
         """Forward function."""
         assert xA.shape == xB.shape, "xA and xB must have the same shape"
-        B, C, H, W = xA.shape
         xA = self.patch_embed(xA)
         xB = self.patch_embed(xB)
+        B, C, H, W = xA.shape
 
         xA = xA.flatten(2).transpose(1, 2)  # [B, H*W, C]
         xB = xB.flatten(2).transpose(1, 2)  # [B, H*W, C]
         xA = self.pos_drop(xA)
         xB = self.pos_drop(xB)
+        xA = xA.transpose(1, 2).view(B, C, H, W) # [B, C, H, W]
+        xB = xB.transpose(1, 2).view(B, C, H, W) # [B, C, H, W]
 
         outs = []
         for i in range(self.num_layers):
             layer = self.layers[i]
+            mlp = self.mlps[i]
             layer.H, layer.W = H, W
-            x_outA = layer(xA)
-            x_outB = layer(xB)
-            # TODO: focal fusion
-            diff = torch.abs(x_outA - x_outB)
+            fusion = layer(xA, xB)
+            fusion = mlp(fusion.flatten(2).transpose(1, 2))
+
             if i in self.out_indices:
                 norm_layer = getattr(self, f'norm{i}')
-                diff = norm_layer(diff)
+                fusion = norm_layer(fusion)
 
-                out = diff.view(-1, H, W, self.num_features[i]).permute(0, 3, 1, 2).contiguous()
+                out = fusion.view(-1, H, W, self.num_features[i]).permute(0, 3, 1, 2).contiguous() # [B, C, H, W]
                 outs.append(out)
 
             if (i < self.num_layers - 1):

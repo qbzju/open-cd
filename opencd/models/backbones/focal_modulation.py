@@ -75,7 +75,7 @@ class Aggregator(nn.Module):
             for k in range(depth):
                 kernel_size = focal_factor * k + focal_window
                 self.layers.append(kernel(dim, kernel_size))
-        else:
+        else: # cross-focal
             focal_factor = kwargs.get('focal_factor', 2)
             focal_window = kwargs.get('focal_window', 7)
             for k in range(depth):

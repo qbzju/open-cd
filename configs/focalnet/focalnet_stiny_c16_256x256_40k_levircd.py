@@ -14,7 +14,7 @@ model = dict(
         patch_size=patch_size,
         embed_dim=embed_dim,
         focal_windows=[3, 3],
-        focal_levels=[2, 2],
+        focal_levels=[3, 3],
         out_indices=(0, 1),
         normalize_context=True,
         use_postln=True,
@@ -34,7 +34,7 @@ model = dict(
 
 
 train_dataloader = dict(
-    batch_size=32,
+    batch_size=64,
     dataset=dict(
         data_root=data_root
     )
