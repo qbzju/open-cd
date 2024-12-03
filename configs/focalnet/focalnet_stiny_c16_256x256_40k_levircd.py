@@ -4,7 +4,7 @@ _base_ = [
 
 data_root = '../datasets/LEVIR-CD'
 
-embed_dim = 96
+embed_dim = 192
 patch_size = 4
 
 model = dict(
@@ -13,8 +13,8 @@ model = dict(
         type='StinyFocalNet',
         patch_size=patch_size,
         embed_dim=embed_dim,
-        focal_windows=[3, 3],
-        focal_levels=[3, 3],
+        focal_windows=[9, 9],
+        focal_levels=[6, 6],
         out_indices=(0, 1),
         normalize_context=True,
         use_postln=True,
@@ -34,7 +34,7 @@ model = dict(
 
 
 train_dataloader = dict(
-    batch_size=64,
+    batch_size=8,
     dataset=dict(
         data_root=data_root
     )
@@ -53,9 +53,53 @@ test_dataloader = dict(
 )
 
 # AdamW optimizer, no weight decay for position embedding & layer norm in backbone
-optimizer = dict(_delete_=True, type='AdamW', lr=0.00003, betas=(0.9, 0.999), weight_decay=0.01,
-                 eps=1e-8,
-                 )
+optimizer = dict(_delete_=True, 
+                 type='AdamW', lr=0.0001, 
+                 betas=(0.9, 0.999), 
+                 weight_decay=0.05,
+                )
+
+param_scheduler = [
+    # warm-up
+    dict(
+        type='LinearLR',
+        start_factor=0.1,
+        by_epoch=False,
+        begin=0,
+        end=2000,  
+    ),
+    # fast-decay
+    dict(
+        type='CosineAnnealingLR',
+        T_max=18000,  
+        by_epoch=False,
+        begin=2000,
+        end=20000,
+    ),
+    # fine-tune
+    dict(
+        type='CosineAnnealingLR',
+        T_max=20000,  
+        by_epoch=False,
+        begin=20000,
+        end=40000,
+        eta_min=1e-7,  
+    )
+]
 
 
-optim_wrapper = dict(type='OptimWrapper', optimizer=optimizer)
+optim_wrapper = dict(
+    type='OptimWrapper',
+    optimizer=optimizer,
+    clip_grad=dict(max_norm=5.0, norm_type=2),
+    paramwise_cfg=dict(
+        custom_keys={
+            'absolute_pos_embed': dict(decay_mult=0.),
+            'relative_position_bias_table': dict(decay_mult=0.),
+            'norm': dict(decay_mult=0.)
+        }),
+)
+
+runner = dict(
+    param_scheduler=param_scheduler 
+)

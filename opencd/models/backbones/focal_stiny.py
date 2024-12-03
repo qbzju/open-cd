@@ -4,7 +4,7 @@ import torch.nn.functional as F
 from timm.models.layers import DropPath, to_2tuple, trunc_normal_
 from opencd.registry import MODELS
 from .focal_modulation import PatchEmbed, Mlp
-from ..necks.focal_fusion import CrossFocalModulation
+from ..necks.focal_fusion import CrossFocalModulation, ChannelAttention
 
 @MODELS.register_module()
 class StinyFocalNet(nn.Module):
@@ -51,21 +51,30 @@ class StinyFocalNet(nn.Module):
         self.num_features = [int(embed_dim * 2 ** i) for i in range(self.num_layers)]
 
         self.layers = nn.ModuleList()
+        self.channel_attentions = nn.ModuleList()
         self.mlps = nn.ModuleList()
+        self.layer_norms = nn.ModuleList()
         for i_layer in range(self.num_layers):
             # TODO: add drop_path implementation, mlp, norm_layer
             layer = CrossFocalModulation(
                     dim=2 * self.num_features[i_layer],
-                    focal_window=focal_windows[i_layer],
                     focal_level=focal_levels[i_layer],
+                    focal_window=focal_windows[i_layer],
+                    normalize_context=normalize_context,
+                    drop=dpr[i_layer]
                 )
+            ca = ChannelAttention(self.num_features[i_layer])
             mlp = Mlp(in_features=self.num_features[i_layer],
                     hidden_features=int(mlp_ratio * self.num_features[i_layer]),
                     act_layer=nn.GELU,
                     drop=drop_rate)
+            norm = norm_layer(self.num_features[i_layer])
             
             self.layers.append(layer)
+            self.channel_attentions.append(ca)
             self.mlps.append(mlp)
+            self.layer_norms.append(norm)
+
         # add a norm layer for each output
         for i_layer in out_indices:
             layer = norm_layer(self.num_features[i_layer])
@@ -130,16 +139,21 @@ class StinyFocalNet(nn.Module):
         xB = xB.flatten(2).transpose(1, 2)  # [B, H*W, C]
         xA = self.pos_drop(xA)
         xB = self.pos_drop(xB)
-        xA = xA.transpose(1, 2).view(B, C, H, W) # [B, C, H, W]
-        xB = xB.transpose(1, 2).view(B, C, H, W) # [B, C, H, W]
+        xA = xA.transpose(1, 2).view(B, C, H, W).contiguous() # [B, C, H, W]
+        xB = xB.transpose(1, 2).view(B, C, H, W).contiguous() # [B, C, H, W]
 
         outs = []
         for i in range(self.num_layers):
             layer = self.layers[i]
             mlp = self.mlps[i]
+            norm = self.layer_norms[i]
             layer.H, layer.W = H, W
-            fusion = layer(xA, xB)
-            fusion = mlp(fusion.flatten(2).transpose(1, 2))
+            # cross focal modulation
+            fusion = layer(xA, xB).flatten(2).transpose(1, 2)       # [B, L, C]
+            fusion = norm(fusion).transpose(1, 2).view(B, -1, H, W).contiguous()  # [B, C, H, W]
+            fusion = self.channel_attentions[i](fusion) * fusion    # [B, C, H, W]
+            fusion = fusion.flatten(2).transpose(1, 2)              # [B, L, C]
+            fusion = mlp(fusion) + fusion                           # residual connection
 
             if i in self.out_indices:
                 norm_layer = getattr(self, f'norm{i}')

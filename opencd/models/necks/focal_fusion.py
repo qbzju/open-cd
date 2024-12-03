@@ -31,8 +31,8 @@ class CrossFocalKernel(nn.Module):
 
 
 class CrossAggregator(Aggregator):
-    def __init__(self, dim, focal_level, kernel=CrossFocalKernel):
-        super().__init__(dim, focal_level, kernel)
+    def __init__(self, dim, focal_level, focal_window, kernel=CrossFocalKernel, normalize_context=False):
+        super().__init__(dim, focal_level, kernel, normalize_context, focal_window=focal_window)
         self.h = nn.Conv2d(dim // 2, dim // 2, 1, 1, 0, groups=1, bias=True)
 
     def forward(self, context, gates, H=None, W=None):
@@ -67,30 +67,57 @@ class CrossFocalModulation(FocalModulation):
                  focal_factor=2,
                  focal_level=2,
                  focal_window=7,
+                 normalize_context=False,
                  drop=0.):
         super().__init__(dim // 2,
                          focal_factor=focal_factor,
                          focal_level=focal_level,
                          focal_window=focal_window,
-                         )
+                         normalize_context=normalize_context)
         self.aggregator = CrossAggregator(
-            dim, focal_level, kernel=CrossFocalKernel)
+            dim, focal_level, kernel=CrossFocalKernel, normalize_context=normalize_context, focal_window=focal_window)
+        self.gate_sm = nn.Softmax(dim=2)
+
+        # query interaction
+        self.qinteraction = nn.Sequential(
+            nn.Linear(dim//2, dim//2),
+            nn.LayerNorm(dim//2),
+            nn.ReLU()
+        )
+        self.query_gate = nn.Sequential(
+            nn.Linear(dim, 2),
+            nn.Softmax(dim=-1)
+        )
+
         self.proj = nn.Linear(dim // 2, dim // 2)
         self.proj_drop = nn.Dropout(drop)
+        self.ln = nn.LayerNorm(dim // 2)
+
+    def query_interaction(self, qa, qb):
+        query_cat = torch.cat([qa, qb], dim=-1)     # [B, L, 2C]
+        query_weights = self.query_gate(query_cat)  # [B, L, 2]
+        
+        query_enhanced = self.qinteraction(qa + qb)
+        
+        query_fusion = (query_weights[..., 0:1] * qa + 
+                       query_weights[..., 1:2] * qb + 
+                       query_enhanced)
+        return query_fusion
 
     def forward(self, xa, xb):
         B, C, H, W = xa.shape
         xa = xa.view(B, C, H*W).permute(0, 2, 1).contiguous()
         xb = xb.view(B, C, H*W).permute(0, 2, 1).contiguous()
 
-        _, ctx_a, gates_a = self.modulator(xa)
+        q_a, ctx_a, gates_a = self.modulator(xa)
         q_b, ctx_b, gates_b = self.modulator(xb)
-        gates = gates_a + gates_b
+        gates = self.gate_sm(gates_a + gates_b)
         ctx_all = self.aggregator(
             torch.cat([ctx_a, ctx_b], dim=2), gates, H, W)  # B, L, 2c
-
-        ctx_all *= q_b
-        x_out = self.proj_drop(self.proj(ctx_all))
+        
+        q_fusion = self.query_interaction(q_a, q_b)
+        ctx_all *= q_fusion
+        x_out = self.proj_drop(self.proj(self.ln(ctx_all)))
 
         return x_out.view(B, H, W, C).permute(0, 3, 1, 2).contiguous()
 

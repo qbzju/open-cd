@@ -62,6 +62,7 @@ class Aggregator(nn.Module):
         self.depth = depth
         self.kernel = kernel
         self.normalize_context = normalize_context
+        window = kwargs.get('focal_window', 7)
         # multi-scale convolution layers
         self.layers = nn.ModuleList()
         if kernel is FocalModulationBlock:
@@ -71,15 +72,13 @@ class Aggregator(nn.Module):
                 self.layers.append(kernel(dim, **kwargs))
         elif kernel is FocalKernel:
             focal_factor = kwargs.get('focal_factor', 2)
-            focal_window = kwargs.get('focal_window', 7)
             for k in range(depth):
-                kernel_size = focal_factor * k + focal_window
+                kernel_size = focal_factor * k + window
                 self.layers.append(kernel(dim, kernel_size))
         else: # cross-focal
             focal_factor = kwargs.get('focal_factor', 2)
-            focal_window = kwargs.get('focal_window', 7)
             for k in range(depth):
-                kernel_size = focal_factor * k + focal_window
+                kernel_size = focal_factor * k + window
                 self.layers.append(kernel(dim, kernel_size))
 
         self.act = nn.GELU()
