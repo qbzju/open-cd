@@ -3,8 +3,41 @@ import torch.nn as nn
 import torch.nn.functional as F
 from timm.models.layers import DropPath, to_2tuple, trunc_normal_
 from opencd.registry import MODELS
-from .focal_modulation import PatchEmbed, Mlp
+from .focal_modulation import PatchEmbed
 from ..necks.focal_fusion import CrossFocalModulation, ChannelAttention
+
+class Mlp(nn.Module):
+    """Channel mixing layer with 1x1 convolutions.
+    
+    Args:
+        in_channels (int): Number of input channels.
+        mlp_ratio (float): Channel expansion ratio. Default: 4.
+        drop (float): Dropout rate. Default: 0.
+        use_residual (bool): Whether to use residual connection. Default: True
+    """
+    def __init__(self, 
+                 in_channels: int, 
+                 mlp_ratio: float = 4., 
+                 drop: float = 0.,
+                 use_residual: bool = True):
+        super().__init__()
+        
+        hidden_channels = int(in_channels * mlp_ratio)
+        self.use_residual = use_residual
+        
+        self.channel_mix = nn.Sequential(
+            nn.Conv2d(in_channels, hidden_channels, 1),
+            nn.GELU(),
+            nn.Dropout(p=drop),
+            nn.Conv2d(hidden_channels, in_channels, 1),
+            nn.Dropout(p=drop)
+        )
+    
+    def forward(self, x):
+        if self.use_residual:
+            return self.channel_mix(x) + x
+        return self.channel_mix(x)
+
 
 @MODELS.register_module()
 class StinyFocalNet(nn.Module):
@@ -13,8 +46,7 @@ class StinyFocalNet(nn.Module):
                  in_chans=3,
                  embed_dim=96,
                  mlp_ratio=4.,
-                 drop_rate=0.,
-                 drop_path_rate=0.2,
+                 drop_path_rate=0.5,
                  norm_layer=nn.LayerNorm,
                  patch_norm=True,
                  out_indices=(0, 1, 2, 3),
@@ -22,9 +54,8 @@ class StinyFocalNet(nn.Module):
                  focal_levels=[2, 2, 2, 2],
                  focal_windows=[9, 9, 9, 9],
                  use_conv_embed=False,
-                 use_layerscale=False,
-                 use_postln=False,
                  normalize_context=False,
+                 num_head=4,
                 ):
         super().__init__()
 
@@ -40,12 +71,8 @@ class StinyFocalNet(nn.Module):
             norm_layer=norm_layer if self.patch_norm else None,
             use_conv_embed=use_conv_embed, is_stem=True)
 
-        self.pos_drop = nn.Dropout(p=drop_rate)
-
         # stochastic depth
-        dpr = [x.item() for x in torch.linspace(0, drop_path_rate,
-                                                # stochastic depth decay rule
-                                                self.num_layers)]
+        dpr = [x.item() for x in torch.linspace(0, drop_path_rate, self.num_layers)]
 
         # build layers
         self.num_features = [int(embed_dim * 2 ** i) for i in range(self.num_layers)]
@@ -53,33 +80,27 @@ class StinyFocalNet(nn.Module):
         self.layers = nn.ModuleList()
         self.channel_attentions = nn.ModuleList()
         self.mlps = nn.ModuleList()
-        self.layer_norms = nn.ModuleList()
         for i_layer in range(self.num_layers):
-            # TODO: add drop_path implementation, mlp, norm_layer
+            # TODO: add multi-head cross focal modulation
             layer = CrossFocalModulation(
                     dim=2 * self.num_features[i_layer],
                     focal_level=focal_levels[i_layer],
                     focal_window=focal_windows[i_layer],
                     normalize_context=normalize_context,
-                    drop=dpr[i_layer]
+                    drop=dpr[i_layer],
+                    num_head=num_head
                 )
-            ca = ChannelAttention(self.num_features[i_layer])
-            mlp = Mlp(in_features=self.num_features[i_layer],
-                    hidden_features=int(mlp_ratio * self.num_features[i_layer]),
-                    act_layer=nn.GELU,
-                    drop=drop_rate)
-            norm = norm_layer(self.num_features[i_layer])
+            ca = ChannelAttention(2 * self.num_features[i_layer])
+            mlp = Mlp(
+                in_channels=2 * self.num_features[i_layer],
+                mlp_ratio=mlp_ratio,
+                drop=dpr[i_layer],
+                use_residual=True
+            )
             
             self.layers.append(layer)
             self.channel_attentions.append(ca)
             self.mlps.append(mlp)
-            self.layer_norms.append(norm)
-
-        # add a norm layer for each output
-        for i_layer in out_indices:
-            layer = norm_layer(self.num_features[i_layer])
-            layer_name = f'norm{i_layer}'
-            self.add_module(layer_name, layer)
 
         self.downsamples = nn.ModuleList()
         for i in range(self.num_layers):
@@ -135,32 +156,17 @@ class StinyFocalNet(nn.Module):
         xB = self.patch_embed(xB)
         B, C, H, W = xA.shape
 
-        xA = xA.flatten(2).transpose(1, 2)  # [B, H*W, C]
-        xB = xB.flatten(2).transpose(1, 2)  # [B, H*W, C]
-        xA = self.pos_drop(xA)
-        xB = self.pos_drop(xB)
-        xA = xA.transpose(1, 2).view(B, C, H, W).contiguous() # [B, C, H, W]
-        xB = xB.transpose(1, 2).view(B, C, H, W).contiguous() # [B, C, H, W]
-
         outs = []
         for i in range(self.num_layers):
             layer = self.layers[i]
             mlp = self.mlps[i]
-            norm = self.layer_norms[i]
-            layer.H, layer.W = H, W
             # cross focal modulation
-            fusion = layer(xA, xB).flatten(2).transpose(1, 2)       # [B, L, C]
-            fusion = norm(fusion).transpose(1, 2).view(B, -1, H, W).contiguous()  # [B, C, H, W]
+            xA, xB, fusion = layer(xA, xB)                                 
             fusion = self.channel_attentions[i](fusion) * fusion    # [B, C, H, W]
-            fusion = fusion.flatten(2).transpose(1, 2)              # [B, L, C]
-            fusion = mlp(fusion) + fusion                           # residual connection
+            fusion = mlp(fusion)                                    # residual connection
 
             if i in self.out_indices:
-                norm_layer = getattr(self, f'norm{i}')
-                fusion = norm_layer(fusion)
-
-                out = fusion.view(-1, H, W, self.num_features[i]).permute(0, 3, 1, 2).contiguous() # [B, C, H, W]
-                outs.append(out)
+                outs.append(fusion)
 
             if (i < self.num_layers - 1):
                 xA = self.downsamples[i](xA)

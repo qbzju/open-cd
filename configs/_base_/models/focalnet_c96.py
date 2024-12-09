@@ -20,15 +20,12 @@ model = dict(
         embed_dim=embed_dim,
         patch_size=patch_size,
         mlp_ratio=4.,
-        drop_rate=0.,
         drop_path_rate=0.2,
         patch_norm=True,
         focal_windows=[3, 3],
         focal_levels=[2, 2],
         out_indices=(0, 1),
         normalize_context=True,
-        use_postln=True,
-        use_layerscale=True
     ),
     decode_head=dict(
         type='mmseg.UPerHead',

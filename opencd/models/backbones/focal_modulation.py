@@ -11,79 +11,89 @@ import torch.nn.functional as F
 from timm.models.layers import DropPath, to_2tuple, trunc_normal_
 from opencd.registry import MODELS
 
+
 class FocalKernel(nn.Module):
     """Focal Kernel for extracting features at different scales
-    
+
     Args:
         dim (int): Number of input channels
         kernel_size (int): Size of the convolution kernel
         use_gelu (bool, default=True): Whether to use GELU activation
     """
-    def __init__(self, dim, kernel_size, use_gelu=True):
+
+    def __init__(self, dim, kernel_size, use_gelu=True, drop=0.):
         super().__init__()
         self.conv = nn.Conv2d(
             dim, dim,
             kernel_size=kernel_size,
             stride=1,
-            groups=dim,  
+            groups=dim,
             padding=kernel_size//2,
             bias=False
         )
-        
-        self.act = nn.GELU() if use_gelu else nn.Identity()
         self.H = None
         self.W = None
-        
+
     def forward(self, x):
         '''x : [B, L, C]'''
         B, L, C = x.shape
         assert L == self.H * self.W, "input feature has wrong size"
-        x_out = x.view(x.shape[0], self.H, self.W, x.shape[2]).permute(0, 3, 1, 2).contiguous() # [B, C, H, W]
-        x_out = self.act(self.conv(x_out))
-        return x_out.view(B, C, L).permute(0, 2, 1).contiguous() # [B, L, C]
+        short_cut = x
+        x_out = x.view(x.shape[0], self.H, self.W, x.shape[2]).permute(
+            0, 3, 1, 2).contiguous()  # [B, C, H, W]
+        x_out = self.conv(x_out).view(B, C, L).permute(0, 2, 1).contiguous()
+        return short_cut + x_out  # residual connection
+
 
 class Aggregator(nn.Module):
     """Aggregate context features at multiple focal levels and global context
-    
+
     Args:
         dim (int): Number of input channels
         depth (int): Number of aggregation levels
         kernel (nn.Module): Kernel module
         kwargs: Additional keyword arguments
     """
-    def __init__(self, 
-                 dim, 
-                 depth, 
+
+    def __init__(self,
+                 dim,
+                 depth,
                  kernel=FocalKernel,
                  normalize_context=False,
+                 num_head=4,
                  **kwargs):
         super().__init__()
         self.dim = dim
         self.depth = depth
         self.kernel = kernel
         self.normalize_context = normalize_context
+        self.drop = kwargs.get('drop', 0.)
+        self.num_head = num_head
+        self.head_dim = dim // num_head
+
         window = kwargs.get('focal_window', 7)
         # multi-scale convolution layers
         self.layers = nn.ModuleList()
         if kernel is FocalModulationBlock:
             for k in range(depth):
                 drop_path = kwargs.get('drop_path', 0.0)
-                kwargs['drop_path'] = drop_path[k] if isinstance(drop_path, list) else drop_path
+                kwargs['drop_path'] = drop_path[k] if isinstance(
+                    drop_path, list) else drop_path
                 self.layers.append(kernel(dim, **kwargs))
         elif kernel is FocalKernel:
             focal_factor = kwargs.get('focal_factor', 2)
             for k in range(depth):
                 kernel_size = focal_factor * k + window
-                self.layers.append(kernel(dim, kernel_size))
-        else: # cross-focal
+                self.layers.append(kernel(dim // self.num_head, kernel_size, drop=self.drop))
+        else:  # cross-focal
             focal_factor = kwargs.get('focal_factor', 2)
             for k in range(depth):
                 kernel_size = focal_factor * k + window
                 self.layers.append(kernel(dim, kernel_size))
 
         self.act = nn.GELU()
-        self.h = nn.Conv2d(dim, dim, 1, 1, 0, groups=1, bias=True)
-        
+        self.h = nn.Linear(dim, dim)
+
     def forward(self, context, gates, H=None, W=None):
         """
         Args:
@@ -94,24 +104,33 @@ class Aggregator(nn.Module):
         """
         B, L, C = context.shape
         assert L == H * W, "input feature has wrong size"
-        ctx_all = 0
-        ctx = context
-        for i, layer in enumerate(self.layers):
-            layer.H, layer.W = H, W
-            ctx = layer(ctx)
-            ctx_all = ctx_all + ctx * gates[:, :, i:i+1]
-
-        ctx_global = self.act(ctx_all.mean(dim=1, keepdim=True))
-        ctx_all = ctx_all + ctx_global * gates[:, :, self.depth:]
-
-        if self.normalize_context:
-            ctx_all = ctx_all / (self.depth + 1)
-
-        ctx_all = ctx_all.view(B, H, W, -1).permute(0, 3, 1, 2).contiguous() # [B, C, H, W]
-        ctx_all = self.h(ctx_all)
-        return ctx_all.view(B, -1, L).permute(0, 2, 1).contiguous() # [B, L, C]
         
-    
+        short_cut = context
+        context = context.view(B, L, self.num_head, self.head_dim)
+        gates = gates.view(B, L, self.num_head, self.depth+1)
+
+        outputs = []
+        for head_idx in range(self.num_head):
+            ctx_all = 0
+            ctx = context[:, :, head_idx, :]  # [B, L, head_dim]
+            for i, layer in enumerate(self.layers):
+                layer.H, layer.W = H, W
+                ctx = layer(ctx)
+                ctx_all = ctx_all + ctx * gates[:, :, head_idx, i:i+1]
+
+            ctx_global = self.act(ctx_all.mean(dim=1, keepdim=True))
+            ctx_all = ctx_all + ctx_global * gates[:, :, head_idx, self.depth:]
+
+            if self.normalize_context:
+                ctx_all = ctx_all / (self.depth + 1)
+
+            outputs.append(ctx_all)
+
+        ctx_all = torch.cat(outputs, dim=-1)
+        ctx_all = self.h(ctx_all)
+
+        return short_cut + ctx_all
+
 
 class Modulator(nn.Module):
     """Modulator for generating modulated features
@@ -121,12 +140,13 @@ class Modulator(nn.Module):
         focal_level (int): Number of focal levels
     """
 
-    def __init__(self, dim, focal_level):
+    def __init__(self, dim, focal_level, num_head=4):
         super().__init__()
         self.dim = dim
         self.focal_level = focal_level
+        self.num_head = num_head
 
-        self.f = nn.Linear(dim, 2*dim+(focal_level+1))
+        self.f = nn.Linear(dim, 2*dim + num_head*(focal_level+1))
         # TODO: replace softmax with other activation function
         self.gate_sm = nn.Softmax(dim=2)
 
@@ -144,7 +164,7 @@ class Modulator(nn.Module):
 
         query, context, gates = torch.split(
             x,
-            (self.dim, self.dim, self.focal_level+1),
+            (self.dim, self.dim, self.num_head*(self.focal_level+1)),
             dim=2
         )
 
@@ -174,6 +194,7 @@ class Mlp(nn.Module):
         x = self.drop(x)
         return x
 
+
 class FocalModulation(nn.Module):
     """ Focal Modulation
 
@@ -186,7 +207,7 @@ class FocalModulation(nn.Module):
         use_postln (bool, default=True): Whether use post-modulation layernorm
     """
 
-    def __init__(self, dim, proj_drop=0., focal_level=2, 
+    def __init__(self, dim, proj_drop=0., focal_level=2,
                  focal_window=7, focal_factor=2,
                  use_postln=False, normalize_context=True):
 
@@ -200,17 +221,16 @@ class FocalModulation(nn.Module):
         self.use_postln = use_postln
 
         self.modulator = Modulator(dim, focal_level)
-        self.aggregator = Aggregator(dim, 
-                                     focal_level, 
+        self.aggregator = Aggregator(dim,
+                                     focal_level,
                                      normalize_context=normalize_context,
-                                     focal_window=focal_window, 
+                                     focal_window=focal_window,
                                      focal_factor=focal_factor)
         if self.use_postln:
             self.norm = nn.LayerNorm(dim)
-        
+
         self.proj = nn.Linear(dim, dim)
         self.proj_drop = nn.Dropout(proj_drop)
-
 
     def forward(self, x, H=None, W=None):
         """ Forward function.
@@ -219,7 +239,7 @@ class FocalModulation(nn.Module):
             x: input features with shape of (B, L, C)
             x_out: output features with shape of (B, L, C)
         """
-        q, ctx, gates = self.modulator(x) 
+        q, ctx, gates = self.modulator(x)
         ctx_all = self.aggregator(ctx, gates, H, W)
         x_out = q * ctx_all
 
@@ -330,9 +350,9 @@ class BasicLayer(nn.Module):
                  use_conv_embed=False,
                  use_layerscale=False,
                  use_checkpoint=False,
-                 use_postln=False, # use postln in BaseLayer
+                 use_postln=False,  # use postln in BaseLayer
                  normalize_context=False,
-                ):
+                 ):
         super().__init__()
         self.depth = depth
         self.use_checkpoint = use_checkpoint
@@ -342,7 +362,7 @@ class BasicLayer(nn.Module):
 
         # self.normalize_layer = normalize_layers
         self.modulator = Modulator(dim, depth)
-        self.aggregator = Aggregator(dim, depth, 
+        self.aggregator = Aggregator(dim, depth,
                                      FocalModulationBlock,
                                      drop=drop,
                                      drop_path=drop_path,
@@ -366,7 +386,7 @@ class BasicLayer(nn.Module):
 
         else:
             self.downsample = None
-        
+
         if self.use_postln:
             self.norm = norm_layer(dim)
 
@@ -411,7 +431,7 @@ class PatchEmbed(nn.Module):
         is_stem (bool): Is the stem block or not. 
     """
 
-    def __init__(self, patch_size=4, in_chans=3, embed_dim=96, 
+    def __init__(self, patch_size=4, in_chans=3, embed_dim=96,
                  norm_layer=None, use_conv_embed=False, is_stem=False):
         super().__init__()
         patch_size = to_2tuple(patch_size)
@@ -540,7 +560,8 @@ class FocalNet(nn.Module):
                     depth=depths[i_layer],
                     mlp_ratio=mlp_ratio,
                     drop=drop_rate,
-                    drop_path=dpr[sum(depths[:i_layer]):sum(depths[:i_layer + 1])],
+                    drop_path=dpr[sum(depths[:i_layer])
+                                      :sum(depths[:i_layer + 1])],
                     norm_layer=norm_layer,
                     downsample=PatchEmbed if (
                         i_layer < self.num_layers - 1) else None,
@@ -560,7 +581,8 @@ class FocalNet(nn.Module):
                     depth=depths[i_layer],
                     mlp_ratio=mlp_ratio,
                     drop=drop_rate,
-                    drop_path=dpr[sum(depths[:i_layer]):sum(depths[:i_layer + 1])],
+                    drop_path=dpr[sum(depths[:i_layer])
+                                      :sum(depths[:i_layer + 1])],
                     norm_layer=norm_layer,
                     downsample=None,
                     focal_window=focal_windows[i_layer],
